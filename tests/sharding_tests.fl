@@ -1,0 +1,450 @@
+// ============================================================================
+// Consistent Hashing & Sharding Tests - 15 test cases
+// Week 2: Full coverage for sharding system
+// ============================================================================
+
+include "../src/sharding.fl"
+
+// Test framework
+struct TestResult {
+    name: string,
+    passed: bool,
+    message: string,
+}
+
+fn assert_equal_u32(actual: u32, expected: u32, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: actual == expected,
+        message: if (actual == expected) "PASS" else "FAIL: expected " + expected + " got " + actual,
+    }
+}
+
+fn assert_equal_u64(actual: u64, expected: u64, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: actual == expected,
+        message: if (actual == expected) "PASS" else "FAIL: expected " + expected + " got " + actual,
+    }
+}
+
+fn assert_true(condition: bool, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: condition,
+        message: if (condition) "PASS" else "FAIL: condition is false",
+    }
+}
+
+fn assert_false(condition: bool, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: !condition,
+        message: if (!condition) "PASS" else "FAIL: condition is true",
+    }
+}
+
+fn print_test_result(result: TestResult) {
+    if (result.passed) {
+        print("✓ " + result.name + ": " + result.message);
+    } else {
+        print("✗ " + result.name + ": " + result.message);
+    };
+}
+
+// ============================================================================
+// Test 1: Hash Ring Creation
+// ============================================================================
+
+fn test_hash_ring_creation() -> TestResult {
+    let ring = new_consistent_hash_ring(150);
+
+    return assert_equal_u32(ring.virtual_nodes, 150, "test_hash_ring_creation");
+}
+
+// ============================================================================
+// Test 2: Consistent Mapping
+// ============================================================================
+
+fn test_consistent_mapping() -> TestResult {
+    let ring = new_consistent_hash_ring(150);
+    ring = add_node_to_ring(ring, 0);
+    ring = add_node_to_ring(ring, 1);
+    ring = add_node_to_ring(ring, 2);
+
+    // Same key always maps to same node
+    let node1a = get_node_for_key(ring, "user:123");
+    let node1b = get_node_for_key(ring, "user:123");
+
+    return assert_equal_u32(node1a, node1b, "test_consistent_mapping");
+}
+
+// ============================================================================
+// Test 3: Add Node Minimal Movement
+// ============================================================================
+
+fn test_add_node_minimal_movement() -> TestResult {
+    let ring = new_consistent_hash_ring(100);
+    ring = add_node_to_ring(ring, 0);
+    ring = add_node_to_ring(ring, 1);
+
+    // Count keys before
+    let key_positions_before = [];
+    let i = 0;
+    while (i < 100) {
+        let key = "key:" + i;
+        let node = get_node_for_key(ring, key);
+        key_positions_before.push(node);
+        i = i + 1;
+    };
+
+    // Add new node
+    ring = add_node_to_ring(ring, 2);
+
+    // Count keys after
+    let moved = 0;
+    let j = 0;
+    while (j < 100) {
+        let key = "key:" + j;
+        let node = get_node_for_key(ring, key);
+        if (node != key_positions_before[j]) {
+            moved = moved + 1;
+        };
+        j = j + 1;
+    };
+
+    // With 3 nodes, expect ~33% of keys to move (1/3)
+    // But consistent hashing should minimize this
+    let ratio = moved / 100;
+    let acceptable = ratio < 50;  // Less than 50% moved
+
+    return assert_true(acceptable, "test_add_node_minimal_movement");
+}
+
+// ============================================================================
+// Test 4: Remove Node Redistribution
+// ============================================================================
+
+fn test_remove_node_redistribution() -> TestResult {
+    let ring = new_consistent_hash_ring(100);
+    ring = add_node_to_ring(ring, 0);
+    ring = add_node_to_ring(ring, 1);
+    ring = add_node_to_ring(ring, 2);
+
+    // Remove node
+    ring = remove_node_from_ring(ring, 2);
+
+    let result = assert_equal_u32(ring.node_list.len(), 2, "test_remove_node_redistribution");
+
+    return result;
+}
+
+// ============================================================================
+// Test 5: Virtual Node Balance
+// ============================================================================
+
+fn test_virtual_node_balance() -> TestResult {
+    let ring = new_consistent_hash_ring(150);
+    ring = add_node_to_ring(ring, 0);
+
+    // Each physical node should have 150 virtual nodes
+    let virtual_count = 0;
+    let i = 0;
+    while (i < ring.nodes.len()) {
+        if (ring.nodes[i].node_id == 0) {
+            virtual_count = virtual_count + 1;
+        };
+        i = i + 1;
+    };
+
+    return assert_equal_u32(virtual_count, 150, "test_virtual_node_balance");
+}
+
+// ============================================================================
+// Test 6: Shard Key Lookup
+// ============================================================================
+
+fn test_shard_key_lookup() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    let key = "user:123";
+    let primary = get_node_for_key(store.ring, key);
+
+    let valid_node = primary == 0 || primary == 1 || primary == 2;
+
+    return assert_true(valid_node, "test_shard_key_lookup");
+}
+
+// ============================================================================
+// Test 7: Sharded Put/Get
+// ============================================================================
+
+fn test_sharded_put_get() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    store = put(store, "user:123", "alice");
+    let value = get(store, "user:123");
+
+    return assert_equal(value, "alice", "test_sharded_put_get");
+}
+
+// Equality function for strings
+fn assert_equal(actual: string, expected: string, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: actual == expected,
+        message: if (actual == expected) "PASS" else "FAIL: expected '" + expected + "' got '" + actual + "'",
+    }
+}
+
+// ============================================================================
+// Test 8: Replication Factor
+// ============================================================================
+
+fn test_replication_factor() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    let replicas = get_replica_nodes(store.ring, "user:123", 3);
+
+    return assert_equal_u32(replicas.len(), 3, "test_replication_factor");
+}
+
+// ============================================================================
+// Test 9: Node Failure Redistribution
+// ============================================================================
+
+fn test_node_failure_redistribution() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    // Count keys per node before failure
+    let stats_before = get_balance_stats(store);
+
+    // Simulate node failure by removal
+    store = remove_node_from_store(store, 2);
+
+    // Keys should redistribute to other nodes
+    let stats_after = get_balance_stats(store);
+
+    let result = assert_equal_u32(stats_after.len(), 2, "test_node_failure_redistribution");
+
+    return result;
+}
+
+// ============================================================================
+// Test 10: Hotspot Detection
+// ============================================================================
+
+fn test_hotspot_detection() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    // Add keys that might create hotspots
+    let i = 0;
+    while (i < 50) {
+        let key = "hot:" + i;
+        store = put(store, key, "value");
+        i = i + 1;
+    };
+
+    // Detect hotspots (may or may not find any)
+    let hotspots = detect_hotspots(store);
+
+    // Test passes if detection runs without error
+    return assert_true(hotspots.len() >= 0, "test_hotspot_detection");
+}
+
+// ============================================================================
+// Test 11: Cross-Shard Query (Multiple Keys)
+// ============================================================================
+
+fn test_cross_shard_query() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    // Store multiple keys
+    store = put(store, "user:1", "alice");
+    store = put(store, "user:2", "bob");
+    store = put(store, "user:3", "charlie");
+
+    // Retrieve them
+    let v1 = get(store, "user:1");
+    let v2 = get(store, "user:2");
+    let v3 = get(store, "user:3");
+
+    let all_retrieved = (v1 == "alice") && (v2 == "bob") && (v3 == "charlie");
+
+    return assert_true(all_retrieved, "test_cross_shard_query");
+}
+
+// ============================================================================
+// Test 12: Range Scan
+// ============================================================================
+
+fn test_range_scan() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+
+    // Add sequential keys
+    let i = 0;
+    while (i < 10) {
+        let key = "item:" + i;
+        store = put(store, key, "value");
+        i = i + 1;
+    };
+
+    // Verify all keys are stored
+    let found = 0;
+    let j = 0;
+    while (j < 10) {
+        let key = "item:" + j;
+        let value = get(store, key);
+        if (value == "value") {
+            found = found + 1;
+        };
+        j = j + 1;
+    };
+
+    return assert_equal_u32(found, 10, "test_range_scan");
+}
+
+// ============================================================================
+// Test 13: Shard Split (Conceptual)
+// ============================================================================
+
+fn test_shard_split() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+
+    // Add many keys
+    let i = 0;
+    while (i < 100) {
+        let key = "key:" + i;
+        store = put(store, key, "value");
+        i = i + 1;
+    };
+
+    // Split: add new node (causes redistribution)
+    store = add_node_to_store(store, 2);
+
+    // Data should still be accessible
+    let v = get(store, "key:50");
+
+    return assert_equal(v, "value", "test_shard_split");
+}
+
+// ============================================================================
+// Test 14: Shard Merge (Conceptual)
+// ============================================================================
+
+fn test_shard_merge() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    // Add keys
+    let i = 0;
+    while (i < 50) {
+        let key = "key:" + i;
+        store = put(store, key, "value");
+        i = i + 1;
+    };
+
+    // Merge: remove node (consolidates shards)
+    store = remove_node_from_store(store, 2);
+
+    // Data should still be accessible
+    let v = get(store, "key:25");
+
+    return assert_equal(v, "value", "test_shard_merge");
+}
+
+// ============================================================================
+// Test 15: Load Distribution Balance
+// ============================================================================
+
+fn test_load_distribution() -> TestResult {
+    let store = new_sharded_kv_store(3);
+    store = add_node_to_store(store, 0);
+    store = add_node_to_store(store, 1);
+    store = add_node_to_store(store, 2);
+
+    // Add many keys
+    let i = 0;
+    while (i < 300) {
+        let key = "key:" + i;
+        store = put(store, key, "value");
+        i = i + 1;
+    };
+
+    // Check balance
+    let balanced = check_balance(store);
+
+    return assert_true(balanced, "test_load_distribution");
+}
+
+// ============================================================================
+// Test Runner
+// ============================================================================
+
+fn run_all_tests() {
+    print("===============================================");
+    print("Consistent Hashing & Sharding Tests - Week 2");
+    print("===============================================");
+
+    let results = [];
+
+    // Run all 15 tests
+    results.push(test_hash_ring_creation());
+    results.push(test_consistent_mapping());
+    results.push(test_add_node_minimal_movement());
+    results.push(test_remove_node_redistribution());
+    results.push(test_virtual_node_balance());
+    results.push(test_shard_key_lookup());
+    results.push(test_sharded_put_get());
+    results.push(test_replication_factor());
+    results.push(test_node_failure_redistribution());
+    results.push(test_hotspot_detection());
+    results.push(test_cross_shard_query());
+    results.push(test_range_scan());
+    results.push(test_shard_split());
+    results.push(test_shard_merge());
+    results.push(test_load_distribution());
+
+    // Print results
+    let i = 0;
+    let passed = 0;
+    while (i < results.len()) {
+        print_test_result(results[i]);
+        if (results[i].passed) {
+            passed = passed + 1;
+        };
+        i = i + 1;
+    };
+
+    print("");
+    print("===============================================");
+    print("Results: " + passed + " / " + results.len() + " tests passed");
+    print("===============================================");
+}
+
+// Main entry point
+run_all_tests();

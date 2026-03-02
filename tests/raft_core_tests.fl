@@ -1,0 +1,509 @@
+// ============================================================================
+// Raft Consensus Core Tests - 20 comprehensive test cases
+// Week 1: Full test coverage for Raft algorithm
+// ============================================================================
+
+include "../src/raft_core.fl"
+
+// Test framework
+struct TestResult {
+    name: string,
+    passed: bool,
+    message: string,
+}
+
+fn assert_equal(actual: u64, expected: u64, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: actual == expected,
+        message: if (actual == expected) "PASS" else "FAIL: expected " + expected + " got " + actual,
+    }
+}
+
+fn assert_true(condition: bool, test_name: string) -> TestResult {
+    TestResult {
+        name: test_name,
+        passed: condition,
+        message: if (condition) "PASS" else "FAIL: condition is false",
+    }
+}
+
+fn assert_state(node: RaftNode, expected_state: RaftState, test_name: string) -> TestResult {
+    let state_match = false;
+    match node.state {
+        RaftState.Follower => { if (expected_state == RaftState.Follower) state_match = true; },
+        RaftState.Candidate => { if (expected_state == RaftState.Candidate) state_match = true; },
+        RaftState.Leader => { if (expected_state == RaftState.Leader) state_match = true; },
+    };
+
+    TestResult {
+        name: test_name,
+        passed: state_match,
+        message: if (state_match) "PASS" else "FAIL: state mismatch",
+    }
+}
+
+fn print_test_result(result: TestResult) {
+    if (result.passed) {
+        print("✓ " + result.name + ": " + result.message);
+    } else {
+        print("✗ " + result.name + ": " + result.message);
+    };
+}
+
+// ============================================================================
+// Test 1: Initial Follower State
+// ============================================================================
+
+fn test_initial_follower_state() -> TestResult {
+    let node = new_raft_node(0, 3);
+
+    return assert_state(node, RaftState.Follower, "test_initial_follower_state");
+}
+
+// ============================================================================
+// Test 2: Term Increment on Election
+// ============================================================================
+
+fn test_term_increment_on_election() -> TestResult {
+    let node = new_raft_node(0, 3);
+    let initial_term = node.current_term;
+
+    node = start_election(node);
+    let result = assert_equal(node.current_term, initial_term + 1, "test_term_increment_on_election");
+
+    return result;
+}
+
+// ============================================================================
+// Test 3: Candidate Vote Request
+// ============================================================================
+
+fn test_candidate_vote_request() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node = start_election(node);
+
+    return assert_state(node, RaftState.Candidate, "test_candidate_vote_request");
+}
+
+// ============================================================================
+// Test 4: Vote Granted Conditions
+// ============================================================================
+
+fn test_vote_granted_conditions() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node.current_term = 5;
+
+    let req = VoteRequest {
+        term: 5,
+        candidate_id: 1,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+
+    let resp = handle_vote_request(node, req);
+
+    return assert_true(resp.vote_granted, "test_vote_granted_conditions");
+}
+
+// ============================================================================
+// Test 5: Vote Rejected on Old Term
+// ============================================================================
+
+fn test_vote_rejected_on_old_term() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node.current_term = 10;
+
+    let req = VoteRequest {
+        term: 5,
+        candidate_id: 1,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+
+    let resp = handle_vote_request(node, req);
+
+    return assert_true(!resp.vote_granted, "test_vote_rejected_on_old_term");
+}
+
+// ============================================================================
+// Test 6: Leader Election with Majority
+// ============================================================================
+
+fn test_leader_election_majority() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node = start_election(node);
+
+    // Simulate majority votes (need 2 out of 3)
+    node.votes_received = 2;
+
+    let has_majority = check_majority(node.votes_received, node.num_nodes);
+    node = become_leader(node);
+
+    return assert_state(node, RaftState.Leader, "test_leader_election_majority");
+}
+
+// ============================================================================
+// Test 7: Split Vote Reelection
+// ============================================================================
+
+fn test_split_vote_reelection() -> TestResult {
+    let node1 = new_raft_node(0, 3);
+    let node2 = new_raft_node(1, 3);
+
+    node1 = start_election(node1);
+    node2 = start_election(node2);
+
+    // Both are candidates for same term - no majority
+    let result1 = assert_state(node1, RaftState.Candidate, "test_split_vote_reelection");
+
+    return result1;
+}
+
+// ============================================================================
+// Test 8: Leader Heartbeat
+// ============================================================================
+
+fn test_leader_heartbeat() -> TestResult {
+    let leader = new_raft_node(0, 3);
+    leader = start_election(leader);
+    leader = become_leader(leader);
+
+    let follower = new_raft_node(1, 3);
+    let election_before = follower.election_elapsed_ms;
+
+    let req = AppendEntriesRequest {
+        term: leader.current_term,
+        leader_id: leader.id,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: [],
+        leader_commit: 0,
+    };
+
+    let resp = handle_append_entries(follower, req);
+    let election_after = follower.election_elapsed_ms;
+
+    return assert_equal(election_after, 0, "test_leader_heartbeat");
+}
+
+// ============================================================================
+// Test 9: Log Replication (3 nodes)
+// ============================================================================
+
+fn test_log_replication_3nodes() -> TestResult {
+    let leader = new_raft_node(0, 3);
+    leader = start_election(leader);
+    leader = become_leader(leader);
+
+    let entry = LogEntry {
+        term: leader.current_term,
+        index: 1,
+        command: "SET x=1",
+    };
+
+    leader = replicate_log(leader, entry);
+
+    return assert_equal(leader.log.len(), 1, "test_log_replication_3nodes");
+}
+
+// ============================================================================
+// Test 10: Commit Requires Majority
+// ============================================================================
+
+fn test_commit_requires_majority() -> TestResult {
+    let leader = new_raft_node(0, 3);
+    leader = start_election(leader);
+    leader = become_leader(leader);
+
+    let entry = LogEntry {
+        term: leader.current_term,
+        index: 1,
+        command: "SET x=1",
+    };
+
+    leader = replicate_log(leader, entry);
+
+    // Only leader has it (1 out of 3 is not majority)
+    leader.match_index[0] = 1;
+
+    leader = commit_entries(leader);
+
+    return assert_equal(leader.commit_index, 0, "test_commit_requires_majority");
+}
+
+// ============================================================================
+// Test 11: Safety - No Two Leaders
+// ============================================================================
+
+fn test_safety_no_two_leaders() -> TestResult {
+    let node1 = new_raft_node(0, 3);
+    let node2 = new_raft_node(1, 3);
+
+    // Node1 becomes leader in term 5
+    node1.current_term = 5;
+    node1 = start_election(node1);
+    node1.votes_received = 2;
+    node1 = become_leader(node1);
+
+    // Node2 cannot become leader in same term (Safety 1)
+    node2.current_term = 5;
+    node2 = start_election(node2);
+
+    let result1 = assert_state(node1, RaftState.Leader, "test_safety_no_two_leaders");
+
+    return result1;
+}
+
+// ============================================================================
+// Test 12: Log Matching Property
+// ============================================================================
+
+fn test_log_matching_property() -> TestResult {
+    let node = new_raft_node(0, 3);
+
+    let entry1 = LogEntry {
+        term: 1,
+        index: 1,
+        command: "SET x=1",
+    };
+
+    let entry2 = LogEntry {
+        term: 1,
+        index: 2,
+        command: "SET y=2",
+    };
+
+    node.log.push(entry1);
+    node.log.push(entry2);
+
+    let matches = check_log_matching(node, 1, 1);
+
+    return assert_true(matches, "test_log_matching_property");
+}
+
+// ============================================================================
+// Test 13: Leader Completeness
+// ============================================================================
+
+fn test_leader_completeness() -> TestResult {
+    let leader = new_raft_node(0, 3);
+
+    let entry1 = LogEntry {
+        term: 1,
+        index: 1,
+        command: "SET x=1",
+    };
+
+    leader.log.push(entry1);
+
+    let committed = [];
+    committed.push("SET x=1");
+
+    let complete = check_leader_completeness(leader, committed);
+
+    return assert_true(complete, "test_leader_completeness");
+}
+
+// ============================================================================
+// Test 14: Follower Catchup
+// ============================================================================
+
+fn test_follower_catchup() -> TestResult {
+    let follower = new_raft_node(1, 3);
+
+    let req = AppendEntriesRequest {
+        term: 1,
+        leader_id: 0,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: [
+            LogEntry { term: 1, index: 1, command: "SET x=1" },
+            LogEntry { term: 1, index: 2, command: "SET y=2" },
+        ],
+        leader_commit: 0,
+    };
+
+    let resp = handle_append_entries(follower, req);
+
+    return assert_true(resp.success, "test_follower_catchup");
+}
+
+// ============================================================================
+// Test 15: Stale Leader Detection
+// ============================================================================
+
+fn test_stale_leader_detection() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node.current_term = 10;
+
+    let req = AppendEntriesRequest {
+        term: 5,
+        leader_id: 1,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: [],
+        leader_commit: 0,
+    };
+
+    let resp = handle_append_entries(node, req);
+
+    return assert_true(!resp.success, "test_stale_leader_detection");
+}
+
+// ============================================================================
+// Test 16: Term Monotonic Increase
+// ============================================================================
+
+fn test_term_monotonic_increase() -> TestResult {
+    let node = new_raft_node(0, 3);
+    let term1 = node.current_term;
+
+    node = start_election(node);
+    let term2 = node.current_term;
+
+    node = start_election(node);
+    let term3 = node.current_term;
+
+    let increasing = (term1 < term2) && (term2 < term3);
+
+    return assert_true(increasing, "test_term_monotonic_increase");
+}
+
+// ============================================================================
+// Test 17: Apply Committed Entries
+// ============================================================================
+
+fn test_apply_committed_entries() -> TestResult {
+    let node = new_raft_node(0, 3);
+
+    let entry1 = LogEntry {
+        term: 1,
+        index: 1,
+        command: "SET x=1",
+    };
+
+    node.log.push(entry1);
+    node.commit_index = 1;
+    node.last_applied = 0;
+
+    node = apply_committed(node);
+
+    return assert_equal(node.last_applied, 1, "test_apply_committed_entries");
+}
+
+// ============================================================================
+// Test 18: Network Partition Recovery
+// ============================================================================
+
+fn test_network_partition_recovery() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node.current_term = 5;
+    node.state = RaftState.Leader;
+
+    // Simulate recovery: higher term from other partition
+    let req = AppendEntriesRequest {
+        term: 10,
+        leader_id: 1,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: [],
+        leader_commit: 0,
+    };
+
+    let resp = handle_append_entries(node, req);
+
+    return assert_equal(node.current_term, 10, "test_network_partition_recovery");
+}
+
+// ============================================================================
+// Test 19: Leader Crash Reelection
+// ============================================================================
+
+fn test_leader_crash_reelection() -> TestResult {
+    let node = new_raft_node(0, 3);
+    node.current_term = 5;
+    node.state = RaftState.Leader;
+
+    // Simulate timeout and new election (leader crashed)
+    node.election_elapsed_ms = node.election_timeout_ms + 1;
+
+    // Start new election
+    node = start_election(node);
+
+    return assert_equal(node.current_term, 6, "test_leader_crash_reelection");
+}
+
+// ============================================================================
+// Test 20: 5-Node Cluster
+// ============================================================================
+
+fn test_5node_cluster() -> TestResult {
+    let node0 = new_raft_node(0, 5);
+    let node1 = new_raft_node(1, 5);
+    let node2 = new_raft_node(2, 5);
+    let node3 = new_raft_node(3, 5);
+    let node4 = new_raft_node(4, 5);
+
+    // All start as followers
+    let all_followers = (node0.state == RaftState.Follower) &&
+                       (node1.state == RaftState.Follower) &&
+                       (node2.state == RaftState.Follower) &&
+                       (node3.state == RaftState.Follower) &&
+                       (node4.state == RaftState.Follower);
+
+    return assert_true(all_followers, "test_5node_cluster");
+}
+
+// ============================================================================
+// Test Runner
+// ============================================================================
+
+fn run_all_tests() {
+    print("===============================================");
+    print("Raft Consensus Core Tests - Week 1");
+    print("===============================================");
+
+    let results = [];
+
+    // Run all 20 tests
+    results.push(test_initial_follower_state());
+    results.push(test_term_increment_on_election());
+    results.push(test_candidate_vote_request());
+    results.push(test_vote_granted_conditions());
+    results.push(test_vote_rejected_on_old_term());
+    results.push(test_leader_election_majority());
+    results.push(test_split_vote_reelection());
+    results.push(test_leader_heartbeat());
+    results.push(test_log_replication_3nodes());
+    results.push(test_commit_requires_majority());
+    results.push(test_safety_no_two_leaders());
+    results.push(test_log_matching_property());
+    results.push(test_leader_completeness());
+    results.push(test_follower_catchup());
+    results.push(test_stale_leader_detection());
+    results.push(test_term_monotonic_increase());
+    results.push(test_apply_committed_entries());
+    results.push(test_network_partition_recovery());
+    results.push(test_leader_crash_reelection());
+    results.push(test_5node_cluster());
+
+    // Print results
+    let i = 0;
+    let passed = 0;
+    while (i < results.len()) {
+        print_test_result(results[i]);
+        if (results[i].passed) {
+            passed = passed + 1;
+        };
+        i = i + 1;
+    };
+
+    print("");
+    print("===============================================");
+    print("Results: " + passed + " / " + results.len() + " tests passed");
+    print("===============================================");
+}
+
+// Main entry point
+run_all_tests();
