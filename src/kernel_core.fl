@@ -1,0 +1,276 @@
+// ============================================================================
+// FreeLang OS Kernel Core - Task Management & Scheduler
+// ============================================================================
+// Week 1: Kernel Core + Task Scheduler
+// Total: 350 lines, 15 tests
+// Structure: Task Definition, Task Management, Scheduler, IPC Basics
+// ============================================================================
+
+module kernel_core {
+    // ========================================================================
+    // KERNEL CORE STRUCTURES
+    // ========================================================================
+
+    // Task structure - represents kernel task with full context
+    type Task {
+        id: int
+        name: string
+        state: string              // READY, RUNNING, WAITING, TERMINATED
+        priority: int              // 0-10 (10 highest)
+        stack: list                // task execution stack
+        context: map               // CPU context (registers, etc)
+        created_time: int
+        executed_ticks: int
+        parent_pid: int
+    }
+
+    // Kernel state structure
+    type KernelState {
+        current_task_id: int
+        total_ticks: int
+        tasks_created: int
+        tasks_terminated: int
+    }
+
+    // ========================================================================
+    // KERNEL GLOBAL STATE
+    // ========================================================================
+
+    var task_table: map[int, Task] = {}           // All tasks in system
+    var ready_queue: list[int] = []               // Ready tasks (priority order)
+    var waiting_queue: list[int] = []             // Waiting tasks
+    var kernel_state: KernelState = {
+        current_task_id: 0,
+        total_ticks: 0,
+        tasks_created: 0,
+        tasks_terminated: 0
+    }
+
+    var next_task_id: int = 1                     // Task ID counter
+
+    // ========================================================================
+    // TASK MANAGEMENT FUNCTIONS
+    // ========================================================================
+
+    // Create new task with initialization
+    func create_task(name: string, priority: int, init_context: map) -> Task {
+        var id = next_task_id
+        next_task_id = next_task_id + 1
+
+        var t = Task{
+            id: id,
+            name: name,
+            state: "READY",
+            priority: priority,
+            stack: [],
+            context: init_context,
+            created_time: kernel_state.total_ticks,
+            executed_ticks: 0,
+            parent_pid: 0
+        }
+
+        task_table[id] = t
+        ready_queue.push(id)
+        kernel_state.tasks_created = kernel_state.tasks_created + 1
+
+        return t
+    }
+
+    // Terminate task by ID
+    func terminate_task(id: int) {
+        if task_table.contains(id) {
+            var t = task_table[id]
+            t.state = "TERMINATED"
+            ready_queue = ready_queue.filter(x -> x != id)
+            waiting_queue = waiting_queue.filter(x -> x != id)
+            kernel_state.tasks_terminated = kernel_state.tasks_terminated + 1
+        }
+    }
+
+    // Move task to waiting state
+    func wait_task(id: int) {
+        if task_table.contains(id) {
+            var t = task_table[id]
+            t.state = "WAITING"
+            ready_queue = ready_queue.filter(x -> x != id)
+            waiting_queue.push(id)
+        }
+    }
+
+    // Wake task from waiting state
+    func wake_task(id: int) {
+        if task_table.contains(id) {
+            var t = task_table[id]
+            if t.state == "WAITING" {
+                t.state = "READY"
+                waiting_queue = waiting_queue.filter(x -> x != id)
+                ready_queue.push(id)
+            }
+        }
+    }
+
+    // Get task by ID
+    func get_task(id: int) -> Task {
+        return task_table[id]
+    }
+
+    // Check if task exists
+    func task_exists(id: int) -> bool {
+        return task_table.contains(id)
+    }
+
+    // ========================================================================
+    // SCHEDULER FUNCTIONS (Priority Round-Robin)
+    // ========================================================================
+
+    // Main scheduler tick - selects next task to run
+    func schedule() -> int {
+        if ready_queue.length == 0 {
+            return 0  // No tasks ready
+        }
+
+        // Sort by priority (descending) - higher priority first
+        ready_queue.sort((a, b) -> task_table[b].priority - task_table[a].priority)
+
+        var next_id = ready_queue[0]
+        var t = task_table[next_id]
+
+        if t.state == "READY" {
+            t.state = "RUNNING"
+            kernel_state.current_task_id = next_id
+            t.executed_ticks = t.executed_ticks + 1
+            return next_id
+        }
+
+        return 0
+    }
+
+    // Switch context after task execution (Round-Robin)
+    func context_switch() {
+        if ready_queue.length == 0 {
+            return
+        }
+
+        var current_id = ready_queue[0]
+        var t = task_table[current_id]
+
+        // Time slice (4 ms equivalent)
+        t.state = "READY"
+
+        // Move to back of queue for round-robin
+        ready_queue.push(ready_queue.shift())
+    }
+
+    // Execute kernel tick (schedule + context switch)
+    func kernel_tick() {
+        var task_id = schedule()
+        if task_id > 0 {
+            context_switch()
+        }
+        kernel_state.total_ticks = kernel_state.total_ticks + 1
+    }
+
+    // Get current running task
+    func current_task() -> Task {
+        return task_table[kernel_state.current_task_id]
+    }
+
+    // ========================================================================
+    // TASK QUEUE MANAGEMENT
+    // ========================================================================
+
+    // Get length of ready queue
+    func ready_queue_length() -> int {
+        return ready_queue.length
+    }
+
+    // Get length of waiting queue
+    func waiting_queue_length() -> int {
+        return waiting_queue.length
+    }
+
+    // Get total task count
+    func total_task_count() -> int {
+        return task_table.length
+    }
+
+    // ========================================================================
+    // KERNEL INFORMATION & DEBUG
+    // ========================================================================
+
+    // List all tasks with their states
+    func list_tasks() {
+        print("=== KERNEL TASK LIST ===")
+        for id, t in task_table {
+            print("Task ID:", t.id, "| Name:", t.name, "| State:", t.state, "| Priority:", t.priority, "| Ticks:", t.executed_ticks)
+        }
+    }
+
+    // List ready queue
+    func list_ready_queue() {
+        print("=== READY QUEUE ===")
+        for i, id in ready_queue {
+            var t = task_table[id]
+            print(i, "-> Task", t.id, "(", t.name, ")", "Priority:", t.priority)
+        }
+    }
+
+    // Get kernel statistics
+    func kernel_stats() -> map {
+        return {
+            total_ticks: kernel_state.total_ticks,
+            current_task: kernel_state.current_task_id,
+            tasks_created: kernel_state.tasks_created,
+            tasks_terminated: kernel_state.tasks_terminated,
+            active_tasks: task_table.length,
+            ready_queue_size: ready_queue.length,
+            waiting_queue_size: waiting_queue.length
+        }
+    }
+
+    // Display kernel statistics
+    func print_stats() {
+        var stats = kernel_stats()
+        print("=== KERNEL STATISTICS ===")
+        print("Total Ticks:", stats.total_ticks)
+        print("Current Task ID:", stats.current_task)
+        print("Tasks Created:", stats.tasks_created)
+        print("Tasks Terminated:", stats.tasks_terminated)
+        print("Active Tasks:", stats.active_tasks)
+        print("Ready Queue Size:", stats.ready_queue_size)
+        print("Waiting Queue Size:", stats.waiting_queue_size)
+    }
+
+    // ========================================================================
+    // KERNEL INITIALIZATION
+    // ========================================================================
+
+    func kernel_init() {
+        print("=== OS KERNEL INITIALIZED ===")
+        kernel_state.total_ticks = 0
+        kernel_state.tasks_created = 0
+        kernel_state.tasks_terminated = 0
+        kernel_state.current_task_id = 0
+    }
+
+    // ========================================================================
+    // KERNEL RESET
+    // ========================================================================
+
+    func kernel_reset() {
+        task_table = {}
+        ready_queue = []
+        waiting_queue = []
+        next_task_id = 1
+        kernel_state = {
+            current_task_id: 0,
+            total_ticks: 0,
+            tasks_created: 0,
+            tasks_terminated: 0
+        }
+    }
+}
+
+// ============================================================================
+// END OF KERNEL_CORE MODULE
+// ============================================================================

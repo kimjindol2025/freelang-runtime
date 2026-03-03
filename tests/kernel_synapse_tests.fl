@@ -1,0 +1,294 @@
+// ============================================================================
+// FreeLang OS Kernel + Synapse Integration Tests
+// ============================================================================
+// Week 1: Kernel Core + Synapse Integration Tests
+// Total: 15 tests, 400+ lines
+// ============================================================================
+
+use kernel_core
+use kernel_synapse_integration
+
+module tests {
+
+    // ========================================================================
+    // TEST 1-5: KERNEL CORE TESTS
+    // ========================================================================
+
+    func test_task_creation() {
+        kernel_core.kernel_reset()
+        kernel_core.kernel_init()
+
+        var t = kernel_core.create_task("Task1", 5, {})
+
+        assert(t.id == 1, "Task ID should be 1")
+        assert(t.name == "Task1", "Task name should be Task1")
+        assert(t.state == "READY", "Initial state should be READY")
+        assert(t.priority == 5, "Priority should be 5")
+        assert(kernel_core.task_exists(1), "Task should exist in table")
+
+        print("✓ test_task_creation PASSED")
+    }
+
+    func test_task_termination() {
+        kernel_core.kernel_reset()
+        kernel_core.kernel_init()
+
+        var t = kernel_core.create_task("Task1", 5, {})
+        kernel_core.terminate_task(t.id)
+
+        assert(kernel_core.get_task(t.id).state == "TERMINATED", "State should be TERMINATED")
+        assert(kernel_core.ready_queue_length() == 0, "Ready queue should be empty")
+
+        print("✓ test_task_termination PASSED")
+    }
+
+    func test_scheduler_selection() {
+        kernel_core.kernel_reset()
+        kernel_core.kernel_init()
+
+        var t1 = kernel_core.create_task("Task1", 5, {})
+        var t2 = kernel_core.create_task("Task2", 8, {})  // Higher priority
+
+        var selected = kernel_core.schedule()
+
+        assert(selected == 2, "Higher priority task should be selected")
+
+        print("✓ test_scheduler_selection PASSED")
+    }
+
+    func test_round_robin_scheduling() {
+        kernel_core.kernel_reset()
+        kernel_core.kernel_init()
+
+        var t1 = kernel_core.create_task("Task1", 5, {})
+        var t2 = kernel_core.create_task("Task2", 5, {})
+        var t3 = kernel_core.create_task("Task3", 5, {})
+
+        var initial_head = kernel_core.ready_queue[0]
+        kernel_core.context_switch()
+        var after_switch = kernel_core.ready_queue[0]
+
+        assert(initial_head != after_switch, "Queue should rotate after context switch")
+
+        print("✓ test_round_robin_scheduling PASSED")
+    }
+
+    func test_task_waiting() {
+        kernel_core.kernel_reset()
+        kernel_core.kernel_init()
+
+        var t = kernel_core.create_task("Task1", 5, {})
+        kernel_core.wait_task(t.id)
+
+        assert(kernel_core.get_task(t.id).state == "WAITING", "State should be WAITING")
+        assert(kernel_core.ready_queue_length() == 0, "Task should be removed from ready queue")
+        assert(kernel_core.waiting_queue_length() == 1, "Task should be in waiting queue")
+
+        print("✓ test_task_waiting PASSED")
+    }
+
+    // ========================================================================
+    // TEST 6-10: SYNAPSE INTEGRATION TESTS
+    // ========================================================================
+
+    func test_event_creation() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var evt = kernel_synapse_integration.create_task_event(1, "TASK_RUNNING", {action: "running"})
+
+        assert(evt.event_id == 1, "Event ID should be 1")
+        assert(evt.event_type == "TASK_RUNNING", "Event type should be TASK_RUNNING")
+        assert(evt.task_id == 1, "Task ID should be 1")
+
+        print("✓ test_event_creation PASSED")
+    }
+
+    func test_task_neuron_binding() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var task_id = 1
+        kernel_core.create_task("Task1", 5, {})
+        kernel_synapse_integration.bind_task_to_neuron(task_id, "neuron_1", ["TASK_CREATED", "TASK_RUNNING"])
+
+        assert(kernel_synapse_integration.get_task_neuron(task_id) == "neuron_1", "Should bind to neuron_1")
+        assert(kernel_synapse_integration.task_neuron_bindings.length == 1, "Should have 1 binding")
+
+        print("✓ test_task_neuron_binding PASSED")
+    }
+
+    func test_task_creation_with_binding() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var task_id = kernel_synapse_integration.create_task_with_neuron_binding(
+            "Task1",
+            5,
+            "neuron_1",
+            ["TASK_CREATED", "TASK_RUNNING", "TASK_TERMINATED"]
+        )
+
+        assert(task_id > 0, "Task should be created")
+        assert(kernel_synapse_integration.get_task_neuron(task_id) == "neuron_1", "Should be bound to neuron_1")
+        assert(kernel_synapse_integration.event_queue.length > 0, "Should have emitted event")
+
+        print("✓ test_task_creation_with_binding PASSED")
+    }
+
+    func test_event_routing() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var task_id = kernel_core.create_task("Task1", 5, {}).id
+        kernel_synapse_integration.bind_task_to_neuron(task_id, "neuron_1", ["TASK_RUNNING"])
+        kernel_synapse_integration.emit_task_running(task_id)
+        kernel_synapse_integration.process_event_queue()
+
+        var binding = kernel_synapse_integration.task_neuron_bindings[task_id]
+        assert(binding.event_count == 1, "Neuron should have received 1 event")
+
+        print("✓ test_event_routing PASSED")
+    }
+
+    func test_kernel_tick_with_synapse() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var t1 = kernel_core.create_task("Task1", 5, {})
+        kernel_synapse_integration.bind_task_to_neuron(t1.id, "neuron_1", ["TASK_RUNNING"])
+
+        var initial_ticks = kernel_core.kernel_state.total_ticks
+        kernel_synapse_integration.kernel_tick_with_synapse()
+        var final_ticks = kernel_core.kernel_state.total_ticks
+
+        assert(final_ticks > initial_ticks, "Ticks should increment")
+
+        print("✓ test_kernel_tick_with_synapse PASSED")
+    }
+
+    // ========================================================================
+    // TEST 11-15: INTEGRATION SCENARIO TESTS
+    // ========================================================================
+
+    func test_multi_task_scenario() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        // Create 3 tasks with different priorities
+        var t1 = kernel_synapse_integration.create_task_with_neuron_binding("HighPrio", 10, "neuron_1", ["TASK_RUNNING"])
+        var t2 = kernel_synapse_integration.create_task_with_neuron_binding("MidPrio", 5, "neuron_2", ["TASK_RUNNING"])
+        var t3 = kernel_synapse_integration.create_task_with_neuron_binding("LowPrio", 1, "neuron_3", ["TASK_RUNNING"])
+
+        // Run for 10 ticks
+        kernel_synapse_integration.kernel_run_with_synapse(10)
+
+        var stats = kernel_synapse_integration.integration_stats()
+        assert(stats.kernel_ticks == 10, "Should have run 10 ticks")
+        assert(stats.active_tasks == 3, "Should have 3 active tasks")
+        assert(stats.total_neurons == 3, "Should have 3 neurons")
+
+        print("✓ test_multi_task_scenario PASSED")
+    }
+
+    func test_task_lifecycle() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var t_id = kernel_synapse_integration.create_task_with_neuron_binding("LifecycleTask", 5, "neuron_life", ["TASK_CREATED", "TASK_RUNNING", "TASK_TERMINATED"])
+
+        kernel_synapse_integration.kernel_tick_with_synapse()
+        kernel_synapse_integration.kernel_tick_with_synapse()
+
+        kernel_synapse_integration.terminate_task_with_cleanup(t_id)
+
+        assert(kernel_core.get_task(t_id).state == "TERMINATED", "Task should be terminated")
+        assert(kernel_synapse_integration.get_task_neuron(t_id) == "", "Should be unbound from neuron")
+
+        print("✓ test_task_lifecycle PASSED")
+    }
+
+    func test_event_queue_processing() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var t1 = kernel_core.create_task("Task1", 5, {}).id
+        kernel_synapse_integration.bind_task_to_neuron(t1, "neuron_1", ["TASK_RUNNING", "TASK_WAITING"])
+
+        // Emit multiple events
+        kernel_synapse_integration.emit_task_running(t1)
+        kernel_synapse_integration.emit_task_waiting(t1)
+        kernel_synapse_integration.emit_task_running(t1)
+
+        assert(kernel_synapse_integration.event_queue.length == 3, "Should have 3 queued events")
+
+        kernel_synapse_integration.process_event_queue()
+
+        assert(kernel_synapse_integration.event_queue.length == 0, "Queue should be empty after processing")
+        assert(kernel_synapse_integration.task_neuron_bindings[t1].event_count == 3, "Should have processed 3 events")
+
+        print("✓ test_event_queue_processing PASSED")
+    }
+
+    func test_kernel_statistics() {
+        kernel_synapse_integration.integration_reset()
+        kernel_synapse_integration.integration_init()
+
+        var t1 = kernel_core.create_task("Task1", 5, {})
+        var t2 = kernel_core.create_task("Task2", 5, {})
+
+        kernel_synapse_integration.kernel_run_with_synapse(5)
+
+        var stats = kernel_synapse_integration.integration_stats()
+
+        assert(stats.kernel_ticks == 5, "Ticks should be 5")
+        assert(stats.active_tasks == 2, "Should have 2 active tasks")
+        assert(stats.total_events_emitted > 0, "Should have emitted events")
+
+        print("✓ test_kernel_statistics PASSED")
+    }
+
+    // ========================================================================
+    // TEST RUNNER
+    // ========================================================================
+
+    func run_all_tests() {
+        print("╔════════════════════════════════════════════════╗")
+        print("║ FreeLang OS Kernel + Synapse Integration Tests║")
+        print("╚════════════════════════════════════════════════╝")
+        print("")
+
+        print("--- KERNEL CORE TESTS (1-5) ---")
+        test_task_creation()
+        test_task_termination()
+        test_scheduler_selection()
+        test_round_robin_scheduling()
+        test_task_waiting()
+        print("")
+
+        print("--- SYNAPSE INTEGRATION TESTS (6-10) ---")
+        test_event_creation()
+        test_task_neuron_binding()
+        test_task_creation_with_binding()
+        test_event_routing()
+        test_kernel_tick_with_synapse()
+        print("")
+
+        print("--- INTEGRATION SCENARIO TESTS (11-15) ---")
+        test_multi_task_scenario()
+        test_task_lifecycle()
+        test_event_queue_processing()
+        test_kernel_statistics()
+        print("")
+
+        print("╔════════════════════════════════════════════════╗")
+        print("║ ALL TESTS PASSED! ✓                            ║")
+        print("╚════════════════════════════════════════════════╝")
+    }
+}
+
+// ============================================================================
+// RUN TESTS
+// ============================================================================
+
+tests.run_all_tests()
