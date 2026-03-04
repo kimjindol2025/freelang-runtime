@@ -28,6 +28,11 @@ pub mod quantization_engine;
 pub mod gpu_accelerator;
 pub mod cache_optimizer;
 pub mod performance_profiler;
+pub mod deployment_manager;
+pub mod health_monitor;
+pub mod analytics_engine;
+pub mod alerting_system;
+pub mod rollback_manager;
 
 pub use user_behavior_model::{
     UserBehaviorModel, UserEvent, Location, LocationType, AppCategory,
@@ -155,4 +160,26 @@ pub use cache_optimizer::{
 pub use performance_profiler::{
     LatencyTracker, PowerMonitor, CacheMonitor, AccuracyTracker,
     PerformanceProfiler, ProfilingReport,
+};
+
+pub use deployment_manager::{
+    DeploymentVersion, DeploymentStage, HealthGate, DeploymentMetrics,
+    DeploymentManager,
+};
+
+pub use health_monitor::{
+    SystemMetrics, InferenceMetrics, HealthScore, HealthMonitor,
+};
+
+pub use analytics_engine::{
+    LatencyDistribution, AnomalyDetector, ThroughputAnalysis,
+    AnalyticsEngine,
+};
+
+pub use alerting_system::{
+    AlertSeverity, Alert, AlertingSystem,
+};
+
+pub use rollback_manager::{
+    RollbackVersion, RollbackReason, RollbackManager,
 };
