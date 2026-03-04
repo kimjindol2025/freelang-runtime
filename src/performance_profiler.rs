@@ -1,398 +1,312 @@
-// Project Sovereign: Performance Profiler Module
-// Goal: Identify bottlenecks and optimization opportunities
-// Target: <1% profiling overhead
+// Phase 9: Performance Profiler
+// Measure and report hardware performance metrics
 
+use std::time::Instant;
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProfileType {
-    CPU,
-    Memory,
-    Thermal,
-    Battery,
-    GPU,
-    Network,
+/// Latency tracker
+#[derive(Debug, Clone)]
+pub struct LatencyTracker {
+    latencies_ms: VecDeque<f32>,
+    max_samples: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct CPUProfile {
-    pub usage_percent: f64,
-    pub freq_mhz: u32,
-    pub core_count: usize,
-    pub throttling: bool,
-    pub samples: usize,
+impl LatencyTracker {
+    pub fn new(max_samples: usize) -> Self {
+        LatencyTracker {
+            latencies_ms: VecDeque::new(),
+            max_samples,
+        }
+    }
+
+    pub fn record(&mut self, latency_ms: f32) {
+        if self.latencies_ms.len() >= self.max_samples {
+            self.latencies_ms.pop_front();
+        }
+        self.latencies_ms.push_back(latency_ms);
+    }
+
+    pub fn get_average(&self) -> f32 {
+        if self.latencies_ms.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self.latencies_ms.iter().sum();
+        sum / self.latencies_ms.len() as f32
+    }
+
+    pub fn get_p95(&self) -> f32 {
+        if self.latencies_ms.is_empty() {
+            return 0.0;
+        }
+        let mut sorted: Vec<f32> = self.latencies_ms.iter().cloned().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let idx = ((sorted.len() as f32 * 0.95) as usize).min(sorted.len() - 1);
+        sorted[idx]
+    }
+
+    pub fn get_p99(&self) -> f32 {
+        if self.latencies_ms.is_empty() {
+            return 0.0;
+        }
+        let mut sorted: Vec<f32> = self.latencies_ms.iter().cloned().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let idx = ((sorted.len() as f32 * 0.99) as usize).min(sorted.len() - 1);
+        sorted[idx]
+    }
+
+    pub fn get_max(&self) -> f32 {
+        self.latencies_ms
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
 }
 
-#[derive(Clone, Debug)]
-pub struct MemoryProfile {
-    pub used_mb: f64,
-    pub available_mb: f64,
-    pub pressure_percent: f64,
-    pub page_faults: u64,
-    pub oom_events: usize,
+/// Power monitor
+#[derive(Debug, Clone)]
+pub struct PowerMonitor {
+    power_readings_mw: VecDeque<f32>,
+    max_samples: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct ThermalProfile {
-    pub max_temp: f64,
-    pub avg_temp: f64,
-    pub hottest_zone: String,
-    pub throttle_events: usize,
-    pub emergency_events: usize,
+impl PowerMonitor {
+    pub fn new(max_samples: usize) -> Self {
+        PowerMonitor {
+            power_readings_mw: VecDeque::new(),
+            max_samples,
+        }
+    }
+
+    pub fn record(&mut self, power_mw: f32) {
+        if self.power_readings_mw.len() >= self.max_samples {
+            self.power_readings_mw.pop_front();
+        }
+        self.power_readings_mw.push_back(power_mw);
+    }
+
+    pub fn get_average_power(&self) -> f32 {
+        if self.power_readings_mw.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self.power_readings_mw.iter().sum();
+        sum / self.power_readings_mw.len() as f32
+    }
+
+    pub fn get_max_power(&self) -> f32 {
+        self.power_readings_mw
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    pub fn get_min_power(&self) -> f32 {
+        self.power_readings_mw
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    pub fn get_power_std_dev(&self) -> f32 {
+        if self.power_readings_mw.is_empty() {
+            return 0.0;
+        }
+        let mean = self.get_average_power();
+        let variance: f32 = self
+            .power_readings_mw
+            .iter()
+            .map(|p| (p - mean).powi(2))
+            .sum::<f32>()
+            / self.power_readings_mw.len() as f32;
+        variance.sqrt()
+    }
 }
 
-#[derive(Clone, Debug)]
-pub struct BatteryProfile {
-    pub drain_rate_mw: f64,
-    pub estimated_hours: f64,
-    pub temp: f64,
-    pub health_percent: f64,
-    pub cycle_count: u32,
+/// Cache monitor
+#[derive(Debug, Clone)]
+pub struct CacheMonitor {
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
-#[derive(Clone, Debug)]
-pub struct GPUProfile {
-    pub utilization_percent: f64,
-    pub freq_mhz: u32,
-    pub fps: f64,
-    pub frame_drops: u64,
-    pub power_mw: f64,
+impl CacheMonitor {
+    pub fn new() -> Self {
+        CacheMonitor {
+            cache_hits: 0,
+            cache_misses: 0,
+        }
+    }
+
+    pub fn record_hit(&mut self) {
+        self.cache_hits += 1;
+    }
+
+    pub fn record_miss(&mut self) {
+        self.cache_misses += 1;
+    }
+
+    pub fn get_hit_rate(&self) -> f32 {
+        let total = self.cache_hits + self.cache_misses;
+        if total == 0 {
+            return 0.0;
+        }
+        (self.cache_hits as f32 / total as f32) * 100.0
+    }
+
+    pub fn get_miss_rate(&self) -> f32 {
+        100.0 - self.get_hit_rate()
+    }
+
+    pub fn reset(&mut self) {
+        self.cache_hits = 0;
+        self.cache_misses = 0;
+    }
 }
 
+/// Accuracy tracker
+#[derive(Debug, Clone)]
+pub struct AccuracyTracker {
+    correct_predictions: u32,
+    total_predictions: u32,
+}
+
+impl AccuracyTracker {
+    pub fn new() -> Self {
+        AccuracyTracker {
+            correct_predictions: 0,
+            total_predictions: 0,
+        }
+    }
+
+    pub fn record_prediction(&mut self, is_correct: bool) {
+        self.total_predictions += 1;
+        if is_correct {
+            self.correct_predictions += 1;
+        }
+    }
+
+    pub fn get_accuracy(&self) -> f32 {
+        if self.total_predictions == 0 {
+            return 0.0;
+        }
+        (self.correct_predictions as f32 / self.total_predictions as f32) * 100.0
+    }
+
+    pub fn reset(&mut self) {
+        self.correct_predictions = 0;
+        self.total_predictions = 0;
+    }
+}
+
+/// Main performance profiler
 pub struct PerformanceProfiler {
-    // Profile history
-    cpu_samples: VecDeque<CPUProfile>,
-    memory_samples: VecDeque<MemoryProfile>,
-    thermal_samples: VecDeque<ThermalProfile>,
-    battery_samples: VecDeque<BatteryProfile>,
-    gpu_samples: VecDeque<GPUProfile>,
-
-    // Bottleneck detection
-    cpu_bottlenecks: Vec<Bottleneck>,
-    memory_bottlenecks: Vec<Bottleneck>,
-    thermal_bottlenecks: Vec<Bottleneck>,
-
-    // Optimization opportunities
-    optimization_score: f64,
-    opportunities: Vec<OptimizationOpportunity>,
-
-    // Statistics
-    profiling_overhead_percent: f64,
-    total_profiles: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct Bottleneck {
-    pub severity: f64,  // 0.0-1.0
-    pub description: String,
-    pub recommendation: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct OptimizationOpportunity {
-    pub potential_gain: f64,  // mW or ms improvement
-    pub difficulty: f64,      // 0.0-1.0 (easy to hard)
-    pub description: String,
+    latency_tracker: LatencyTracker,
+    power_monitor: PowerMonitor,
+    cache_monitor: CacheMonitor,
+    accuracy_tracker: AccuracyTracker,
+    start_time: Option<Instant>,
 }
 
 impl PerformanceProfiler {
     pub fn new() -> Self {
-        Self {
-            cpu_samples: VecDeque::with_capacity(100),
-            memory_samples: VecDeque::with_capacity(100),
-            thermal_samples: VecDeque::with_capacity(100),
-            battery_samples: VecDeque::with_capacity(100),
-            gpu_samples: VecDeque::with_capacity(100),
-
-            cpu_bottlenecks: Vec::new(),
-            memory_bottlenecks: Vec::new(),
-            thermal_bottlenecks: Vec::new(),
-
-            optimization_score: 0.0,
-            opportunities: Vec::new(),
-
-            profiling_overhead_percent: 0.0,
-            total_profiles: 0,
+        PerformanceProfiler {
+            latency_tracker: LatencyTracker::new(1000),
+            power_monitor: PowerMonitor::new(1000),
+            cache_monitor: CacheMonitor::new(),
+            accuracy_tracker: AccuracyTracker::new(),
+            start_time: None,
         }
     }
 
-    /// Record CPU profile
-    pub fn record_cpu(&mut self, profile: CPUProfile) {
-        self.cpu_samples.push_back(profile);
-        if self.cpu_samples.len() > 100 {
-            self.cpu_samples.pop_front();
-        }
-
-        self.analyze_cpu_bottlenecks();
-        self.total_profiles += 1;
+    /// Start timing a measurement
+    pub fn start_timer(&mut self) {
+        self.start_time = Some(Instant::now());
     }
 
-    /// Record Memory profile
-    pub fn record_memory(&mut self, profile: MemoryProfile) {
-        self.memory_samples.push_back(profile);
-        if self.memory_samples.len() > 100 {
-            self.memory_samples.pop_front();
-        }
-
-        self.analyze_memory_bottlenecks();
-        self.total_profiles += 1;
-    }
-
-    /// Record Thermal profile
-    pub fn record_thermal(&mut self, profile: ThermalProfile) {
-        self.thermal_samples.push_back(profile);
-        if self.thermal_samples.len() > 100 {
-            self.thermal_samples.pop_front();
-        }
-
-        self.analyze_thermal_bottlenecks();
-        self.total_profiles += 1;
-    }
-
-    /// Record Battery profile
-    pub fn record_battery(&mut self, profile: BatteryProfile) {
-        self.battery_samples.push_back(profile);
-        if self.battery_samples.len() > 100 {
-            self.battery_samples.pop_front();
-        }
-
-        self.total_profiles += 1;
-    }
-
-    /// Record GPU profile
-    pub fn record_gpu(&mut self, profile: GPUProfile) {
-        self.gpu_samples.push_back(profile);
-        if self.gpu_samples.len() > 100 {
-            self.gpu_samples.pop_front();
-        }
-
-        self.total_profiles += 1;
-    }
-
-    fn analyze_cpu_bottlenecks(&mut self) {
-        self.cpu_bottlenecks.clear();
-
-        if self.cpu_samples.is_empty() {
-            return;
-        }
-
-        // Analyze usage patterns
-        let avg_usage: f64 = self.cpu_samples.iter().map(|s| s.usage_percent).sum::<f64>()
-            / self.cpu_samples.len() as f64;
-
-        if avg_usage > 80.0 {
-            self.cpu_bottlenecks.push(Bottleneck {
-                severity: 0.8,
-                description: "High CPU usage (80%+)".to_string(),
-                recommendation: "Profile app, optimize algorithms, reduce frame rate".to_string(),
-            });
-        }
-
-        // Check throttling
-        let throttle_count = self
-            .cpu_samples
-            .iter()
-            .filter(|s| s.throttling)
-            .count();
-
-        if throttle_count as f64 / self.cpu_samples.len() as f64 > 0.3 {
-            self.cpu_bottlenecks.push(Bottleneck {
-                severity: 0.7,
-                description: "CPU throttling detected (30%+ of samples)".to_string(),
-                recommendation: "Reduce workload or improve thermal cooling".to_string(),
-            });
+    /// End timing and record latency
+    pub fn end_timer(&mut self) {
+        if let Some(start) = self.start_time {
+            let elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+            self.latency_tracker.record(elapsed_ms);
+            self.start_time = None;
         }
     }
 
-    fn analyze_memory_bottlenecks(&mut self) {
-        self.memory_bottlenecks.clear();
-
-        if self.memory_samples.is_empty() {
-            return;
-        }
-
-        let latest = self.memory_samples.back().unwrap();
-
-        if latest.pressure_percent > 80.0 {
-            self.memory_bottlenecks.push(Bottleneck {
-                severity: 0.9,
-                description: format!("Memory pressure {:.0}%", latest.pressure_percent),
-                recommendation: "Release cached data, reduce background apps, enable lowpower mode".to_string(),
-            });
-        }
-
-        // Check for memory leaks (monotonic increase)
-        if self.memory_samples.len() > 20 {
-            let older = self.memory_samples.get(0).unwrap();
-            let newer = self.memory_samples.back().unwrap();
-
-            let growth = newer.used_mb - older.used_mb;
-            if growth > 500.0 {
-                // 500MB growth over 100 samples
-                self.memory_bottlenecks.push(Bottleneck {
-                    severity: 0.6,
-                    description: format!("Possible memory leak ({:.0}MB growth)", growth),
-                    recommendation: "Check for unreleased resources, restart app".to_string(),
-                });
-            }
-        }
+    /// Record power measurement
+    pub fn record_power(&mut self, power_mw: f32) {
+        self.power_monitor.record(power_mw);
     }
 
-    fn analyze_thermal_bottlenecks(&mut self) {
-        self.thermal_bottlenecks.clear();
-
-        if self.thermal_samples.is_empty() {
-            return;
-        }
-
-        let latest = self.thermal_samples.back().unwrap();
-
-        if latest.max_temp > 55.0 {
-            self.thermal_bottlenecks.push(Bottleneck {
-                severity: 0.95,
-                description: format!("Critical temperature {:.1}°C", latest.max_temp),
-                recommendation: "Reduce load immediately, enable active cooling".to_string(),
-            });
-        } else if latest.max_temp > 50.0 {
-            self.thermal_bottlenecks.push(Bottleneck {
-                severity: 0.7,
-                description: format!("High temperature {:.1}°C", latest.max_temp),
-                recommendation: "Monitor thermal trends, reduce background tasks".to_string(),
-            });
-        }
-
-        if latest.throttle_events > 5 {
-            self.thermal_bottlenecks.push(Bottleneck {
-                severity: 0.6,
-                description: format!("{} throttle events", latest.throttle_events),
-                recommendation: "Improve thermal management, check device ventilation".to_string(),
-            });
-        }
+    /// Record cache hit
+    pub fn record_cache_hit(&mut self) {
+        self.cache_monitor.record_hit();
     }
 
-    /// Identify optimization opportunities
-    pub fn identify_opportunities(&mut self) {
-        self.opportunities.clear();
-
-        // CPU optimization
-        if !self.cpu_samples.is_empty() {
-            let avg_usage: f64 = self.cpu_samples.iter().map(|s| s.usage_percent).sum::<f64>()
-                / self.cpu_samples.len() as f64;
-
-            if avg_usage < 20.0 {
-                self.opportunities.push(OptimizationOpportunity {
-                    potential_gain: 50.0,  // mW
-                    difficulty: 0.2,
-                    description: "Reduce CPU frequency for low utilization".to_string(),
-                });
-            }
-        }
-
-        // Memory optimization
-        if !self.memory_samples.is_empty() {
-            let latest = self.memory_samples.back().unwrap();
-
-            if latest.pressure_percent > 70.0 {
-                self.opportunities.push(OptimizationOpportunity {
-                    potential_gain: 100.0,
-                    difficulty: 0.4,
-                    description: "Aggressive memory cleanup, reduce caches".to_string(),
-                });
-            }
-        }
-
-        // Thermal optimization
-        if !self.thermal_samples.is_empty() {
-            let latest = self.thermal_samples.back().unwrap();
-
-            if latest.throttle_events > 0 {
-                self.opportunities.push(OptimizationOpportunity {
-                    potential_gain: 200.0,  // mW from better thermal management
-                    difficulty: 0.6,
-                    description: "Implement predictive thermal throttling".to_string(),
-                });
-            }
-        }
-
-        // Calculate optimization score
-        self.calculate_optimization_score();
+    /// Record cache miss
+    pub fn record_cache_miss(&mut self) {
+        self.cache_monitor.record_miss();
     }
 
-    fn calculate_optimization_score(&mut self) {
-        // Score based on:
-        // 1. Absence of bottlenecks
-        // 2. Availability of opportunities
-        // 3. Current efficiency
-
-        let bottleneck_count = (self.cpu_bottlenecks.len() + self.memory_bottlenecks.len()
-            + self.thermal_bottlenecks.len()) as f64;
-
-        let opportunity_count = self.opportunities.len() as f64;
-
-        // Score 0.0-1.0: 1.0 = perfectly optimized
-        let bottleneck_score = (1.0 - (bottleneck_count / 10.0)).max(0.0);
-        let opportunity_score = (1.0 - (opportunity_count / 10.0)).max(0.0);
-
-        self.optimization_score = (bottleneck_score * 0.6 + opportunity_score * 0.4).min(1.0);
+    /// Record inference accuracy
+    pub fn record_accuracy(&mut self, is_correct: bool) {
+        self.accuracy_tracker.record_prediction(is_correct);
     }
 
-    /// Get profiling report
+    /// Get comprehensive profiling report
     pub fn get_report(&self) -> ProfilingReport {
         ProfilingReport {
-            total_profiles: self.total_profiles,
-            cpu_bottlenecks: self.cpu_bottlenecks.clone(),
-            memory_bottlenecks: self.memory_bottlenecks.clone(),
-            thermal_bottlenecks: self.thermal_bottlenecks.clone(),
-            optimization_opportunities: self.opportunities.clone(),
-            optimization_score: self.optimization_score,
-            profiling_overhead: self.profiling_overhead_percent,
+            avg_latency_ms: self.latency_tracker.get_average(),
+            p95_latency_ms: self.latency_tracker.get_p95(),
+            p99_latency_ms: self.latency_tracker.get_p99(),
+            max_latency_ms: self.latency_tracker.get_max(),
+            avg_power_mw: self.power_monitor.get_average_power(),
+            max_power_mw: self.power_monitor.get_max_power(),
+            min_power_mw: self.power_monitor.get_min_power(),
+            power_std_dev: self.power_monitor.get_power_std_dev(),
+            cache_hit_rate: self.cache_monitor.get_hit_rate(),
+            cache_miss_rate: self.cache_monitor.get_miss_rate(),
+            accuracy_percent: self.accuracy_tracker.get_accuracy(),
         }
     }
 
-    /// Get current CPU average
-    pub fn get_cpu_average(&self) -> Option<f64> {
-        if self.cpu_samples.is_empty() {
-            None
-        } else {
-            let sum: f64 = self.cpu_samples.iter().map(|s| s.usage_percent).sum();
-            Some(sum / self.cpu_samples.len() as f64)
-        }
+    /// Verify performance targets
+    pub fn verify_performance(&self) -> (bool, String) {
+        let report = self.get_report();
+
+        let latency_pass = report.avg_latency_ms < 6.0; // Target: 5-6ms
+        let power_pass = report.avg_power_mw < 150.0;   // Conservative limit
+        let accuracy_pass = report.accuracy_percent >= 98.0; // Maintain ≥98%
+
+        let all_pass = latency_pass && power_pass && accuracy_pass;
+        let msg = format!(
+            "Latency:{:.2}ms Power:{:.1}mW Accuracy:{:.1}% [Pass:{}]",
+            report.avg_latency_ms, report.avg_power_mw, report.accuracy_percent, all_pass
+        );
+
+        (all_pass, msg)
     }
 
-    /// Get current memory pressure
-    pub fn get_memory_pressure(&self) -> Option<f64> {
-        self.memory_samples.back().map(|m| m.pressure_percent)
-    }
-
-    /// Get current temperature
-    pub fn get_current_temperature(&self) -> Option<f64> {
-        self.thermal_samples.back().map(|t| t.max_temp)
-    }
-
-    /// Reset all profiles
+    /// Reset all trackers
     pub fn reset(&mut self) {
-        self.cpu_samples.clear();
-        self.memory_samples.clear();
-        self.thermal_samples.clear();
-        self.battery_samples.clear();
-        self.gpu_samples.clear();
-        self.cpu_bottlenecks.clear();
-        self.memory_bottlenecks.clear();
-        self.thermal_bottlenecks.clear();
-        self.opportunities.clear();
-        self.total_profiles = 0;
+        self.latency_tracker = LatencyTracker::new(1000);
+        self.power_monitor = PowerMonitor::new(1000);
+        self.cache_monitor.reset();
+        self.accuracy_tracker.reset();
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct ProfilingReport {
-    pub total_profiles: usize,
-    pub cpu_bottlenecks: Vec<Bottleneck>,
-    pub memory_bottlenecks: Vec<Bottleneck>,
-    pub thermal_bottlenecks: Vec<Bottleneck>,
-    pub optimization_opportunities: Vec<OptimizationOpportunity>,
-    pub optimization_score: f64,
-    pub profiling_overhead: f64,
+    pub avg_latency_ms: f32,
+    pub p95_latency_ms: f32,
+    pub p99_latency_ms: f32,
+    pub max_latency_ms: f32,
+    pub avg_power_mw: f32,
+    pub max_power_mw: f32,
+    pub min_power_mw: f32,
+    pub power_std_dev: f32,
+    pub cache_hit_rate: f32,
+    pub cache_miss_rate: f32,
+    pub accuracy_percent: f32,
 }
 
 #[cfg(test)]
@@ -402,133 +316,95 @@ mod tests {
     #[test]
     fn test_profiler_creation() {
         let profiler = PerformanceProfiler::new();
-        assert_eq!(profiler.total_profiles, 0);
-        assert_eq!(profiler.optimization_score, 0.0);
+        let report = profiler.get_report();
+        assert_eq!(report.avg_latency_ms, 0.0);
     }
 
     #[test]
-    fn test_cpu_recording() {
+    fn test_latency_measurement() {
         let mut profiler = PerformanceProfiler::new();
 
-        let profile = CPUProfile {
-            usage_percent: 45.0,
-            freq_mhz: 1500,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        };
-
-        profiler.record_cpu(profile);
-        assert_eq!(profiler.total_profiles, 1);
-        assert_eq!(profiler.cpu_samples.len(), 1);
-    }
-
-    #[test]
-    fn test_cpu_bottleneck_detection() {
-        let mut profiler = PerformanceProfiler::new();
-
-        for _ in 0..20 {
-            profiler.record_cpu(CPUProfile {
-                usage_percent: 85.0,  // High usage
-                freq_mhz: 3400,
-                core_count: 8,
-                throttling: true,
-                samples: 100,
-            });
+        for _ in 0..10 {
+            profiler.start_timer();
+            // Simulate some work
+            let _sum: f32 = (0..1000).map(|i| i as f32).sum();
+            profiler.end_timer();
         }
 
-        assert!(!profiler.cpu_bottlenecks.is_empty());
+        let report = profiler.get_report();
+        assert!(report.avg_latency_ms > 0.0);
+        assert!(report.p95_latency_ms >= report.avg_latency_ms);
     }
 
     #[test]
-    fn test_memory_bottleneck_detection() {
+    fn test_power_measurement() {
         let mut profiler = PerformanceProfiler::new();
 
-        let profile = MemoryProfile {
-            used_mb: 3800.0,
-            available_mb: 256.0,
-            pressure_percent: 93.0,
-            page_faults: 10000,
-            oom_events: 2,
-        };
-
-        profiler.record_memory(profile);
-        assert!(!profiler.memory_bottlenecks.is_empty());
-    }
-
-    #[test]
-    fn test_optimization_score() {
-        let mut profiler = PerformanceProfiler::new();
-
-        profiler.record_cpu(CPUProfile {
-            usage_percent: 30.0,
-            freq_mhz: 1500,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        });
-
-        profiler.identify_opportunities();
-        assert!(profiler.optimization_score > 0.0);
-    }
-
-    #[test]
-    fn test_get_report() {
-        let mut profiler = PerformanceProfiler::new();
-
-        profiler.record_cpu(CPUProfile {
-            usage_percent: 45.0,
-            freq_mhz: 1500,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        });
+        profiler.record_power(50.0);
+        profiler.record_power(60.0);
+        profiler.record_power(70.0);
 
         let report = profiler.get_report();
-        assert_eq!(report.total_profiles, 1);
+        assert!((report.avg_power_mw - 60.0).abs() < 0.1);
+        assert!(report.max_power_mw >= 70.0);
     }
 
     #[test]
-    fn test_get_cpu_average() {
+    fn test_accuracy_tracking() {
         let mut profiler = PerformanceProfiler::new();
 
-        profiler.record_cpu(CPUProfile {
-            usage_percent: 40.0,
-            freq_mhz: 1500,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        });
+        profiler.record_accuracy(true);
+        profiler.record_accuracy(true);
+        profiler.record_accuracy(false);
+        profiler.record_accuracy(true);
 
-        profiler.record_cpu(CPUProfile {
-            usage_percent: 60.0,
-            freq_mhz: 2400,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        });
-
-        let avg = profiler.get_cpu_average();
-        assert!(avg.is_some());
-        assert_eq!(avg.unwrap(), 50.0);
+        let report = profiler.get_report();
+        assert!((report.accuracy_percent - 75.0).abs() < 0.1);
     }
 
     #[test]
-    fn test_reset() {
+    fn test_cache_monitoring() {
         let mut profiler = PerformanceProfiler::new();
 
-        profiler.record_cpu(CPUProfile {
-            usage_percent: 45.0,
-            freq_mhz: 1500,
-            core_count: 8,
-            throttling: false,
-            samples: 100,
-        });
+        for _ in 0..70 {
+            profiler.record_cache_hit();
+        }
+        for _ in 0..30 {
+            profiler.record_cache_miss();
+        }
 
-        assert!(profiler.total_profiles > 0);
+        let report = profiler.get_report();
+        assert!((report.cache_hit_rate - 70.0).abs() < 0.1);
+    }
 
-        profiler.reset();
-        assert_eq!(profiler.total_profiles, 0);
-        assert_eq!(profiler.cpu_samples.len(), 0);
+    #[test]
+    fn test_comprehensive_report() {
+        let mut profiler = PerformanceProfiler::new();
+
+        for i in 0..100 {
+            profiler.record_power(50.0 + (i % 20) as f32);
+            profiler.record_accuracy(i % 3 != 0);
+        }
+
+        let report = profiler.get_report();
+        assert!(report.avg_power_mw > 0.0);
+        assert!(report.accuracy_percent > 0.0);
+    }
+
+    #[test]
+    fn test_performance_verification() {
+        let mut profiler = PerformanceProfiler::new();
+
+        // Simulate good performance
+        for _ in 0..50 {
+            profiler.start_timer();
+            let _sum: f32 = (0..100).map(|i| i as f32).sum();
+            profiler.end_timer();
+            profiler.record_power(80.0);
+            profiler.record_accuracy(true);
+        }
+
+        let (pass, msg) = profiler.verify_performance();
+        assert!(!msg.is_empty());
     }
 }

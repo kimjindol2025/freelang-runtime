@@ -24,6 +24,10 @@ pub mod lstm_sequence_model;
 pub mod attention_mechanism;
 pub mod multi_task_learner;
 pub mod model_ensemble;
+pub mod quantization_engine;
+pub mod gpu_accelerator;
+pub mod cache_optimizer;
+pub mod performance_profiler;
 
 pub use user_behavior_model::{
     UserBehaviorModel, UserEvent, Location, LocationType, AppCategory,
@@ -132,4 +136,23 @@ pub use multi_task_learner::{
 pub use model_ensemble::{
     EnsemblePrediction, FixedWeightEnsemble, LearnedGateEnsemble,
     ConfidenceWeightedEnsemble, ModelEnsemble, EnsembleStrategy,
+};
+
+pub use quantization_engine::{
+    QuantizationScheme, Int8Quantizer, Int4Quantizer, CalibrationEngine,
+    QuantizationEngine,
+};
+
+pub use gpu_accelerator::{
+    GPUDeviceType, GPUMemory, GPUKernel, GPUDevice, GPUAccelerator,
+};
+
+pub use cache_optimizer::{
+    CacheHierarchy, LoopTiler, DataReorderer, Prefetcher,
+    CacheOptimizer, CacheStats,
+};
+
+pub use performance_profiler::{
+    LatencyTracker, PowerMonitor, CacheMonitor, AccuracyTracker,
+    PerformanceProfiler, ProfilingReport,
 };
