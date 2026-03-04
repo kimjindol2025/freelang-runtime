@@ -20,6 +20,10 @@ pub mod model_evaluation;
 pub mod device_metrics_collector;
 pub mod on_device_learning_server;
 pub mod telemetry_uploader;
+pub mod lstm_sequence_model;
+pub mod attention_mechanism;
+pub mod multi_task_learner;
+pub mod model_ensemble;
 
 pub use user_behavior_model::{
     UserBehaviorModel, UserEvent, Location, LocationType, AppCategory,
@@ -108,4 +112,24 @@ pub use on_device_learning_server::{
 pub use telemetry_uploader::{
     AggregatedStats, DifferentialPrivacyResult, TelemetryBatch, PersistedTelemetry,
     EdgeAggregation, DifferentialPrivacy, RobustUpload, TelemetryUploader,
+};
+
+pub use lstm_sequence_model::{
+    LSTMCellState, LSTMOutput, SequenceBuffer,
+    LSTMCell, LSTMLayer, LSTMSequenceModel,
+};
+
+pub use attention_mechanism::{
+    AttentionHeadOutput, MultiHeadAttentionOutput,
+    AttentionHead, MultiHeadAttention, AttentionMechanism,
+};
+
+pub use multi_task_learner::{
+    TaskPrediction, MultiTaskOutput, TaskLosses,
+    TaskHead, SharedBackbone, MultiTaskLearner,
+};
+
+pub use model_ensemble::{
+    EnsemblePrediction, FixedWeightEnsemble, LearnedGateEnsemble,
+    ConfidenceWeightedEnsemble, ModelEnsemble, EnsembleStrategy,
 };
