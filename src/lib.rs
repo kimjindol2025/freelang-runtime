@@ -17,6 +17,9 @@ pub mod ml_model;
 pub mod neural_predictor;
 pub mod online_learning;
 pub mod model_evaluation;
+pub mod device_metrics_collector;
+pub mod on_device_learning_server;
+pub mod telemetry_uploader;
 
 pub use user_behavior_model::{
     UserBehaviorModel, UserEvent, Location, LocationType, AppCategory,
@@ -90,4 +93,19 @@ pub use online_learning::{
 
 pub use model_evaluation::{
     ModelEvaluator, ValidationResult, ClassMetrics, ConfusionMatrix, PredictionEval,
+};
+
+pub use device_metrics_collector::{
+    SensorReading, PrivacyFilteredMetrics, BufferMetrics,
+    SensorDataAggregator, PrivacyFilter, MetricsBuffer, DeviceMetricsCollector,
+};
+
+pub use on_device_learning_server::{
+    TrainingBatch, DriftResult, SafetyCheckResult,
+    LocalTrainingEngine, DriftMonitoringV2, SafetyValidator, OnDeviceLearningServer,
+};
+
+pub use telemetry_uploader::{
+    AggregatedStats, DifferentialPrivacyResult, TelemetryBatch, PersistedTelemetry,
+    EdgeAggregation, DifferentialPrivacy, RobustUpload, TelemetryUploader,
 };
