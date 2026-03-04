@@ -1,5 +1,5 @@
 // Project Sovereign: Self-Learning Intelligent Phone OS
-// L4 Intelligence Layer + L3 Hardware Integration + L2 System Integration + L1 Optimization
+// L4 Intelligence Layer + L3 Hardware Integration + L2 System Integration + L1 Optimization + L0 ML Intelligence
 
 pub mod user_behavior_model;
 pub mod system_adaptation;
@@ -13,6 +13,10 @@ pub mod system_integration;
 pub mod performance_profiler;
 pub mod optimization_engine;
 pub mod api_interface;
+pub mod ml_model;
+pub mod neural_predictor;
+pub mod online_learning;
+pub mod model_evaluation;
 
 pub use user_behavior_model::{
     UserBehaviorModel, UserEvent, Location, LocationType, AppCategory,
@@ -69,4 +73,21 @@ pub use optimization_engine::{
 pub use api_interface::{
     SovereignAPI, SystemController, SystemStatus, PerformanceMetrics, TelemetryData,
     APIError, APIResult,
+};
+
+pub use ml_model::{
+    MLModel, ModelConfig, ModelQuantization, Prediction, PredictionResult, ModelMetrics,
+    PredictionConfidence,
+};
+
+pub use neural_predictor::{
+    NeuralPredictor, FeatureVector, AppPrediction, NeuralPrediction, PredictionInput,
+};
+
+pub use online_learning::{
+    OnlineLearning, LearningPhase, LearningMetrics, TrainingBatch, DriftDetectionResult,
+};
+
+pub use model_evaluation::{
+    ModelEvaluator, ValidationResult, ClassMetrics, ConfusionMatrix, PredictionEval,
 };
