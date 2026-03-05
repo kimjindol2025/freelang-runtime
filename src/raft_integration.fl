@@ -1,0 +1,236 @@
+// Raft Consensus: Integration Layer
+// 모든 Raft 컴포넌트를 조립한 통합 노드
+
+fn new_raft_node(node_id: i32, cluster_size: i32) -> any {
+  let config = new_raft_config()
+  config.node_id = node_id
+  config.cluster_size = cluster_size
+
+  return {
+    id: node_id,
+    config: config,
+    raft: new_raft_state(),
+    store: new_log_store(),
+    repl: new_replication_state(),
+    timer: new_timer_manager(),
+    metrics: new_metrics(),
+    snapshot: null,
+    ready: false
+  }
+}
+
+fn initialize_node(node: any) -> any {
+  let timeout = random_election_timeout(node.config)
+  node.timer = reset_election_timer(node.timer, timeout)
+  node.timer = reset_heartbeat_timer(node.timer, node.config.heartbeat_interval)
+
+  node.raft.current_term = 0
+  node.raft.voted_for = -1
+  node.raft.state = "Follower"
+
+  node.ready = true
+  return node
+}
+
+fn process_tick(node: any) -> any {
+  node.timer = tick_election_timer(node.timer)
+  node.timer = tick_heartbeat_timer(node.timer)
+
+  // Handle election timeout
+  if is_election_timeout(node.timer) {
+    node.raft = start_election(node.raft)
+    node.metrics = increment_elections_started(node.metrics)
+
+    let timeout = random_election_timeout(node.config)
+    node.timer = reset_election_timer(node.timer, timeout)
+  }
+
+  // Handle heartbeat timeout (leader only)
+  if node.raft.state == "Leader" && is_heartbeat_timeout(node.timer) {
+    node.timer = reset_heartbeat_timer(node.timer, node.config.heartbeat_interval)
+  }
+
+  return node
+}
+
+fn handle_request_vote_msg(node: any, req: any) -> any {
+  node.metrics = increment_rpc_received(node.metrics)
+
+  let reply = handle_request_vote(node.raft, req)
+
+  if reply.vote_granted {
+    let timeout = random_election_timeout(node.config)
+    node.timer = reset_election_timer(node.timer, timeout)
+  }
+
+  node.metrics = increment_rpc_sent(node.metrics)
+  return reply
+}
+
+fn handle_append_entries_msg(node: any, req: any) -> any {
+  node.metrics = increment_rpc_received(node.metrics)
+
+  let reply = handle_append_entries(node.raft, node.store, req)
+
+  if req.term >= node.raft.current_term {
+    let timeout = random_election_timeout(node.config)
+    node.timer = reset_election_timer(node.timer, timeout)
+  }
+
+  node.metrics = increment_rpc_sent(node.metrics)
+  return reply
+}
+
+fn handle_install_snapshot_msg(node: any, req: any) -> any {
+  node.metrics = increment_rpc_received(node.metrics)
+
+  let snap_state = new_snapshot_state()
+  let reply = handle_install_snapshot(node.raft, req, snap_state)
+
+  if req.term >= node.raft.current_term {
+    let timeout = random_election_timeout(node.config)
+    node.timer = reset_election_timer(node.timer, timeout)
+  }
+
+  node.metrics = increment_rpc_sent(node.metrics)
+  return reply
+}
+
+fn create_heartbeat_messages(node: any) -> any {
+  let messages = []
+
+  if node.raft.state != "Leader" {
+    return messages
+  }
+
+  let i = 0
+  while i < node.config.cluster_size {
+    if i != node.id {
+      let msg = create_append_entries_msg(node.raft, node.store, node.repl, i)
+      push(messages, msg)
+    }
+    i = i + 1
+  }
+
+  return messages
+}
+
+fn create_vote_request_messages(node: any) -> any {
+  let messages = []
+
+  if node.raft.state != "Candidate" {
+    return messages
+  }
+
+  let last_log_index = get_last_index(node.store)
+  let last_log_term = get_last_term(node.store)
+
+  let i = 0
+  while i < node.config.cluster_size {
+    if i != node.id {
+      let msg = new_request_vote(node.raft.current_term, node.id, last_log_index, last_log_term)
+      push(messages, msg)
+    }
+    i = i + 1
+  }
+
+  return messages
+}
+
+fn apply_committed_entries_to_state(node: any) -> any {
+  while node.raft.last_applied < node.raft.commit_index {
+    node.raft.last_applied = node.raft.last_applied + 1
+    let entry = get_entry(node.store, node.raft.last_applied)
+
+    if entry != null {
+      node.metrics.entries_applied = node.metrics.entries_applied + 1
+    }
+  }
+
+  return node
+}
+
+fn append_entry_to_log(node: any, command: string) -> i32 {
+  if node.raft.state != "Leader" {
+    return -1
+  }
+
+  let index = get_last_index(node.store) + 1
+  let entry = new_log_entry(node.raft.current_term, index, command)
+  node.store = append_entry(node.store, entry)
+  node.repl = set_match_index(node.repl, node.id, index)
+
+  node.metrics.entries_replicated = node.metrics.entries_replicated + 1
+  return index
+}
+
+fn get_node_status(node: any) -> string {
+  let result = "Node " + string(node.id) + ": "
+  result = result + state_to_string(node.raft) + " | "
+  result = result + log_store_to_string(node.store)
+
+  return result
+}
+
+fn get_node_full_status(node: any) -> string {
+  let result = get_node_status(node) + "\n"
+  result = result + "  Config: " + config_to_string(node.config) + "\n"
+  result = result + "  " + get_metrics_summary(node.metrics)
+
+  return result
+}
+
+fn is_node_leader(node: any) -> bool {
+  return node.raft.state == "Leader"
+}
+
+fn is_node_follower(node: any) -> bool {
+  return node.raft.state == "Follower"
+}
+
+fn is_node_candidate(node: any) -> bool {
+  return node.raft.state == "Candidate"
+}
+
+fn reset_node(node: any) -> any {
+  node.raft = new_raft_state()
+  node.store = new_log_store()
+  node.repl = new_replication_state()
+  node.timer = new_timer_manager()
+  node.metrics = new_metrics()
+  node.snapshot = null
+
+  return initialize_node(node)
+}
+
+fn export_node_state(node: any) -> any {
+  return {
+    id: node.id,
+    state: node.raft.state,
+    term: node.raft.current_term,
+    voted_for: node.raft.voted_for,
+    commit_index: node.raft.commit_index,
+    last_applied: node.raft.last_applied,
+    log_size: get_log_size(node.store),
+    metrics: node.metrics
+  }
+}
+
+fn validate_node_invariants(node: any) -> bool {
+  // Invariant 1: commit_index <= last_log_index
+  if node.raft.commit_index > get_last_index(node.store) {
+    return false
+  }
+
+  // Invariant 2: last_applied <= commit_index
+  if node.raft.last_applied > node.raft.commit_index {
+    return false
+  }
+
+  // Invariant 3: last_applied <= last_log_index
+  if node.raft.last_applied > get_last_index(node.store) {
+    return false
+  }
+
+  return true
+}
