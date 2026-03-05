@@ -1,9 +1,10 @@
 /* ============================================================================
-   Challenge 16-17: Routing Module Integration (L2 + L1)
+   Challenge 16-17-L0: Routing + Security + Hardware Integration
 
-   7개 서브모듈 통합 및 공개 인터페이스
+   10개 서브모듈 통합 및 공개 인터페이스
    - Challenge 16 (L2): OLSR, Neural Relay, Mobility, Route Optimizer
    - Challenge 17 (L1): Onion Router, Chaff Engine, Packet Forwarder
+   - Challenge L0 (Physical): Radio HAL, Wi-Fi Direct, LoRa Modem
 ============================================================================ */
 
 // Challenge 16 (L2 Routing)
@@ -17,6 +18,11 @@ pub mod onion_router;
 pub mod chaff_engine;
 pub mod packet_forwarder;
 
+// Challenge L0 (Hardware)
+pub mod radio_hal;
+pub mod wifi_direct;
+pub mod lora_modem;
+
 // Challenge 16 재내보내기
 pub use olsr_engine::{OLSREngine, OLSRNode, HelloMessage, TCMessage};
 pub use neural_relay::{NeuralRelaySelector, RelayCandidate, select_relay_from_candidates};
@@ -27,3 +33,8 @@ pub use route_optimizer::{RouteOptimizer, Route, validate_route};
 pub use onion_router::{OnionRouter, OnionPacket, OnionLayer};
 pub use chaff_engine::{ChaffEngine, ChaffPacket, create_packet_pair};
 pub use packet_forwarder::{PacketForwarder, ForwardingMetrics, ForwardResult};
+
+// Challenge L0 재내보내기
+pub use radio_hal::{RadioHAL, GPIOPin, PinMode, I2CResult};
+pub use wifi_direct::{WiFiDirectInterface, WiFiPeer, PowerState, WiFiResult};
+pub use lora_modem::{LoRaModem, LoRaBandwidth, ModemState, LoRaPacket};
