@@ -1,0 +1,405 @@
+// Request/Response Middleware Pipeline (400줄)
+
+struct RequestContext {
+  request_id: string,
+  timestamp: i64,
+  method: string,
+  path: string,
+  remote_addr: string,
+  user_agent: string,
+  trace_id: string,
+}
+
+struct ResponseMetrics {
+  status_code: i32,
+  latency_ms: i64,
+  bytes_sent: i32,
+  error_message: string,
+}
+
+// ==================== Logging Middleware ====================
+
+fn middleware_apply_logging(req: any, logger: any) -> any
+  intent "요청 로깅 미들웨어"
+  do
+    let ctx = {
+      request_id: generate_request_id(),
+      timestamp: current_time_ms(),
+      method: req_get_method(req),
+      path: req_get_path(req),
+      remote_addr: req_get_remote_addr(req),
+      user_agent: req_get_user_agent(req),
+      trace_id: "",
+    }
+
+    // Log Request Entry
+    logger_log(logger, "info", "request.start", {
+      request_id: ctx.request_id,
+      method: ctx.method,
+      path: ctx.path,
+      remote_addr: ctx.remote_addr,
+    })
+
+    // Attach context to request
+    return req_set_context(req, ctx)
+end
+
+fn middleware_log_response(response: any, ctx: any, logger: any) -> void
+  intent "응답 로깅"
+  do
+    let latency_ms = current_time_ms() - ctx.timestamp
+    let status = resp_get_status(response)
+
+    logger_log(logger, "info", "request.end", {
+      request_id: ctx.request_id,
+      method: ctx.method,
+      path: ctx.path,
+      status: status,
+      latency_ms: latency_ms,
+    })
+end
+
+// ==================== Tracing Middleware ====================
+
+fn middleware_apply_tracing(req: any, tracer: any) -> any
+  intent "분산 추적 미들웨어"
+  do
+    let span = tracer_start_span(tracer, req_get_path(req))
+
+    // Extract trace ID from headers
+    let trace_id = req_get_header(req, "X-Trace-ID")
+    if trace_id == null
+      trace_id = generate_trace_id()
+
+    tracer_set_trace_id(span, trace_id)
+    tracer_set_tag(span, "http.method", req_get_method(req))
+    tracer_set_tag(span, "http.path", req_get_path(req))
+
+    return req_set_span(req, span)
+end
+
+fn middleware_end_tracing(response: any, span: any, tracer: any) -> void
+  intent "추적 종료"
+  do
+    tracer_set_tag(span, "http.status", resp_get_status(response))
+    tracer_end_span(span)
+end
+
+// ==================== Rate Limiting Middleware ====================
+
+fn middleware_apply_rate_limit(req: any, limiter: any) -> bool
+  intent "Rate Limiting 미들웨어"
+  do
+    let remote_addr = req_get_remote_addr(req)
+    let allowed = rate_limiter_check(limiter, remote_addr)
+
+    if !allowed
+      return false
+
+    return true
+end
+
+fn middleware_rate_limit_exceeded(limiter: any, remote_addr: string) -> any
+  do
+    return {
+      status: 429,
+      body: "Too Many Requests",
+      headers: {
+        "Retry-After": "60",
+      },
+    }
+end
+
+// ==================== Circuit Breaker Middleware ====================
+
+fn middleware_apply_circuit_breaker(cb: any) -> bool
+  intent "Circuit Breaker 미들웨어"
+  do
+    let state = circuit_breaker_get_state(cb)
+
+    // OPEN: Reject all requests
+    if state == "OPEN"
+      return false
+
+    // HALF_OPEN: Allow limited requests
+    if state == "HALF_OPEN"
+      return circuit_breaker_allow_probe(cb)
+
+    // CLOSED: Allow all requests
+    return true
+end
+
+fn middleware_circuit_breaker_open(cb: any) -> any
+  do
+    return {
+      status: 503,
+      body: "Service Unavailable",
+      headers: {
+        "Retry-After": "30",
+      },
+    }
+end
+
+// ==================== Authentication Middleware ====================
+
+fn middleware_apply_auth(req: any) -> bool
+  intent "인증 미들웨어"
+  do
+    let token = req_get_header(req, "Authorization")
+
+    if token == null
+      return false
+
+    let valid = validate_token(token)
+    return valid
+end
+
+fn middleware_auth_invalid() -> any
+  do
+    return {
+      status: 401,
+      body: "Unauthorized",
+    }
+end
+
+// ==================== CORS Middleware ====================
+
+fn middleware_apply_cors(req: any) -> any
+  intent "CORS 미들웨어"
+  do
+    let origin = req_get_header(req, "Origin")
+
+    if origin == null
+      return req
+
+    if !is_allowed_origin(origin)
+      return req
+
+    req = req_set_header(req, "Access-Control-Allow-Origin", origin)
+    req = req_set_header(req, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+    req = req_set_header(req, "Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    return req
+end
+
+// ==================== Compression Middleware ====================
+
+fn middleware_apply_compression(response: any) -> any
+  intent "응답 압축 미들웨어"
+  do
+    let body = resp_get_body(response)
+    let body_len = string_length(body)
+
+    // Only compress if > 1KB
+    if body_len < 1024
+      return response
+
+    let compressed = gzip_compress(body)
+    response = resp_set_body(response, compressed)
+    response = resp_set_header(response, "Content-Encoding", "gzip")
+
+    return response
+end
+
+// ==================== Metrics Recording ====================
+
+fn middleware_record_metrics(req: any, response: any, latency_ms: i64, metrics: any) -> void
+  intent "메트릭 기록"
+  do
+    let method = req_get_method(req)
+    let status = resp_get_status(response)
+    let path = req_get_path(req)
+
+    // HTTP Request Count
+    metrics_increment_counter(metrics, "http_requests_total", {
+      method: method,
+      status: status,
+    })
+
+    // HTTP Request Duration
+    metrics_observe_histogram(metrics, "http_request_duration_seconds", latency_ms / 1000.0, {
+      method: method,
+      path: path,
+    })
+
+    // HTTP Response Bytes
+    let body_len = string_length(resp_get_body(response))
+    metrics_increment_gauge(metrics, "http_response_bytes", body_len, {
+      status: status,
+    })
+end
+
+// ==================== Error Handling Middleware ====================
+
+fn middleware_handle_panic(err: string) -> any
+  intent "패닉 처리"
+  do
+    return {
+      status: 500,
+      body: "Internal Server Error",
+      headers: {
+        "X-Error": "panic",
+      },
+    }
+end
+
+fn middleware_handle_timeout(timeout_ms: i64) -> any
+  do
+    return {
+      status: 504,
+      body: "Gateway Timeout",
+      headers: {
+        "X-Timeout-Ms": int_to_string(timeout_ms),
+      },
+    }
+end
+
+// ==================== Helper Functions ====================
+
+fn generate_request_id() -> string
+  do
+    return "req_" + int_to_string(current_time_ms())
+end
+
+fn generate_trace_id() -> string
+  do
+    return "trace_" + int_to_string(current_time_ms())
+end
+
+fn req_get_method(req: any) -> string
+  do
+    return "GET"
+end
+
+fn req_get_path(req: any) -> string
+  do
+    return "/"
+end
+
+fn req_get_remote_addr(req: any) -> string
+  do
+    return "127.0.0.1"
+end
+
+fn req_get_user_agent(req: any) -> string
+  do
+    return "Mozilla/5.0"
+end
+
+fn req_set_context(req: any, ctx: any) -> any
+  do
+    return req
+end
+
+fn req_set_span(req: any, span: any) -> any
+  do
+    return req
+end
+
+fn req_get_header(req: any, name: string) -> string
+  do
+    return null
+end
+
+fn req_set_header(req: any, name: string, value: string) -> any
+  do
+    return req
+end
+
+fn resp_get_status(response: any) -> i32
+  do
+    return 200
+end
+
+fn resp_get_body(response: any) -> string
+  do
+    return ""
+end
+
+fn resp_set_body(response: any, body: string) -> any
+  do
+    return response
+end
+
+fn resp_set_header(response: any, name: string, value: string) -> any
+  do
+    return response
+end
+
+fn tracer_start_span(tracer: any, operation: string) -> any
+  do
+    return null
+end
+
+fn tracer_set_trace_id(span: any, trace_id: string) -> void
+  do
+  end
+
+fn tracer_set_tag(span: any, key: string, value: string) -> void
+  do
+  end
+
+fn tracer_end_span(span: any) -> void
+  do
+  end
+
+fn rate_limiter_check(limiter: any, key: string) -> bool
+  do
+    return true
+end
+
+fn circuit_breaker_get_state(cb: any) -> string
+  do
+    return "CLOSED"
+end
+
+fn circuit_breaker_allow_probe(cb: any) -> bool
+  do
+    return true
+end
+
+fn validate_token(token: string) -> bool
+  do
+    return token != ""
+end
+
+fn is_allowed_origin(origin: string) -> bool
+  do
+    return true
+end
+
+fn string_length(s: string) -> i32
+  do
+    return len(s)
+end
+
+fn gzip_compress(data: string) -> string
+  do
+    return data
+end
+
+fn metrics_increment_counter(metrics: any, name: string, labels: any) -> void
+  do
+  end
+
+fn metrics_observe_histogram(metrics: any, name: string, value: f64, labels: any) -> void
+  do
+  end
+
+fn metrics_increment_gauge(metrics: any, name: string, value: i32, labels: any) -> void
+  do
+  end
+
+fn logger_log(logger: any, level: string, msg: string, context: any) -> void
+  do
+  end
+
+fn current_time_ms() -> i64
+  do
+    return 1709633400000
+end
+
+fn int_to_string(n: i64) -> string
+  do
+    return "0"
+end
