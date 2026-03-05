@@ -1,15 +1,29 @@
 /* ============================================================================
-   Challenge 16: L2 Routing Module Integration
+   Challenge 16-17: Routing Module Integration (L2 + L1)
 
-   4개 서브모듈 통합 및 공개 인터페이스
+   7개 서브모듈 통합 및 공개 인터페이스
+   - Challenge 16 (L2): OLSR, Neural Relay, Mobility, Route Optimizer
+   - Challenge 17 (L1): Onion Router, Chaff Engine, Packet Forwarder
 ============================================================================ */
 
+// Challenge 16 (L2 Routing)
 pub mod olsr_engine;
 pub mod neural_relay;
 pub mod mobility_tracker;
 pub mod route_optimizer;
 
+// Challenge 17 (L1 Security)
+pub mod onion_router;
+pub mod chaff_engine;
+pub mod packet_forwarder;
+
+// Challenge 16 재내보내기
 pub use olsr_engine::{OLSREngine, OLSRNode, HelloMessage, TCMessage};
 pub use neural_relay::{NeuralRelaySelector, RelayCandidate, select_relay_from_candidates};
 pub use mobility_tracker::{MobilityTracker, TrackedNode, MobilityClass};
 pub use route_optimizer::{RouteOptimizer, Route, validate_route};
+
+// Challenge 17 재내보내기
+pub use onion_router::{OnionRouter, OnionPacket, OnionLayer};
+pub use chaff_engine::{ChaffEngine, ChaffPacket, create_packet_pair};
+pub use packet_forwarder::{PacketForwarder, ForwardingMetrics, ForwardResult};
