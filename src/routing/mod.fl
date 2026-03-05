@@ -1,0 +1,15 @@
+/* ============================================================================
+   Challenge 16: L2 Routing Module Integration
+
+   4개 서브모듈 통합 및 공개 인터페이스
+============================================================================ */
+
+pub mod olsr_engine;
+pub mod neural_relay;
+pub mod mobility_tracker;
+pub mod route_optimizer;
+
+pub use olsr_engine::{OLSREngine, OLSRNode, HelloMessage, TCMessage};
+pub use neural_relay::{NeuralRelaySelector, RelayCandidate, select_relay_from_candidates};
+pub use mobility_tracker::{MobilityTracker, TrackedNode, MobilityClass};
+pub use route_optimizer::{RouteOptimizer, Route, validate_route};
