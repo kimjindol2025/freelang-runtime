@@ -23,8 +23,6 @@
 const http = require('http');
 const { Middleware } = require('./middleware');
 const { Metrics } = require('./metrics');
-const { CircuitBreaker } = require('./circuit_breaker');
-const { RateLimiter } = require('./rate_limiter');
 
 // ════════════════════════════════════════════════════════════════
 // Circuit Breaker 구현 (R4: < 100µs)
@@ -213,10 +211,16 @@ class SovereignBackendServer {
       return this.handleMetrics(req, res);
     } else if (path === '/api/status') {
       return this.handleStatus(req, res);
-    } else if (path === '/api/data' && req.method === 'GET') {
-      return this.handleGetData(req, res);
-    } else if (path === '/api/data' && req.method === 'POST') {
-      return this.handlePostData(req, res);
+    } else if (path === '/api/data') {
+      if (req.method === 'GET') {
+        return this.handleGetData(req, res);
+      } else if (req.method === 'POST') {
+        return this.handlePostData(req, res);
+      } else {
+        // Method not allowed for this endpoint
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      }
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not Found' }));
