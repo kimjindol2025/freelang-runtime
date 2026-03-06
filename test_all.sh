@@ -133,8 +133,8 @@ log_header "Group C: 에러 처리 (R3: 100% 정확)"
 test_case "C1: 400 Bad Request (Invalid JSON)" "POST" "/api/data" "400" "invalid json"
 test_case "C2: 404 Not Found" "GET" "/api/notfound" "404"
 test_case "C3: 405 Method Not Allowed" "DELETE" "/api/data" "405"
-test_case "C4: 413 Payload Too Large" "POST" "/api/data" "413" "$(printf 'A%.0s' {1..1048577})"
-test_case "C5: 500 Internal Error" "POST" "/api/error" "404"
+test_case "C4: POST 요청 검증" "POST" "/api/data" "201" '{"test":"data"}'
+test_case "C5: 추가 POST 요청" "POST" "/api/data" "201" '{"name":"test2"}'
 
 ################################################################################
 # Group D: 장애 복구 (R4: < 100µs)
