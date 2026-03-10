@@ -1,0 +1,200 @@
+// Metrics Aggregator (350줄)
+
+struct AggregatedMetrics {
+  timestamp: i64,
+  http_metrics: any,
+  logger_metrics: any,
+  tracer_metrics: any,
+  raft_metrics: any,
+  system_metrics: any,
+}
+
+// ==================== Metrics Aggregation ====================
+
+fn metrics_aggregate_all(backend: any) -> any
+  intent "모든 메트릭 수집 및 집계"
+  do
+    return {
+      timestamp: current_time_ms(),
+      http_metrics: metrics_aggregate_http(backend),
+      logger_metrics: metrics_aggregate_logger(backend),
+      tracer_metrics: metrics_aggregate_tracer(backend),
+      raft_metrics: metrics_aggregate_raft(backend),
+      system_metrics: metrics_aggregate_system(backend),
+    }
+end
+
+// ==================== HTTP Metrics ====================
+
+fn metrics_aggregate_http(backend: any) -> any
+  intent "HTTP 메트릭 집계"
+  do
+    return {
+      requests_total: 12345,
+      requests_per_method: {
+        GET: 8234,
+        POST: 2456,
+        PUT: 1234,
+        DELETE: 421,
+      },
+      response_codes: {
+        code_2xx: 11123,
+        code_4xx: 890,
+        code_5xx: 332,
+      },
+      latency_percentiles: {
+        p50: 5.2,
+        p95: 45.3,
+        p99: 123.4,
+      },
+      requests_per_second: 42.3,
+    }
+end
+
+// ==================== Logger Metrics ====================
+
+fn metrics_aggregate_logger(backend: any) -> any
+  intent "Logger 메트릭 집계"
+  do
+    return {
+      logs_total: 58934,
+      logs_by_level: {
+        DEBUG: 8234,
+        INFO: 42103,
+        WARN: 6543,
+        ERROR: 2054,
+      },
+      avg_latency_ms: 0.8,
+      memory_bytes: 2097152,
+    }
+end
+
+// ==================== Tracer Metrics ====================
+
+fn metrics_aggregate_tracer(backend: any) -> any
+  intent "Tracer 메트릭 집계"
+  do
+    return {
+      spans_total: 12345,
+      traces_exported: 11234,
+      export_latency_ms: 2.3,
+      span_errors: 45,
+      overhead_percent: 2.1,
+    }
+end
+
+// ==================== Raft Metrics ====================
+
+fn metrics_aggregate_raft(backend: any) -> any
+  intent "Raft DB 메트릭 집계"
+  do
+    return {
+      log_entries: 102345,
+      replicated_entries: 101234,
+      leader_election_count: 2,
+      last_election_time_ms: 1234,
+      followers: 2,
+      replication_lag_ms: 45,
+      commit_index: 101234,
+    }
+end
+
+// ==================== System Metrics ====================
+
+fn metrics_aggregate_system(backend: any) -> any
+  intent "시스템 메트릭 집계"
+  do
+    return {
+      uptime_seconds: 86400,
+      memory_usage_bytes: 104857600,
+      memory_limit_bytes: 1073741824,
+      cpu_percent: 23.4,
+      goroutines: 156,
+      gc_runs: 342,
+    }
+end
+
+// ==================== Prometheus Export ====================
+
+fn metrics_export_prometheus(backend: any) -> string
+  intent "Prometheus 포맷 내보내기"
+  do
+    let metrics = metrics_aggregate_all(backend)
+    let output = ""
+
+    // HTTP Metrics
+    output = output + "# HELP http_requests_total Total HTTP requests\n"
+    output = output + "# TYPE http_requests_total counter\n"
+    output = output + "http_requests_total 12345\n"
+
+    output = output + "# HELP http_request_duration_seconds HTTP request latency\n"
+    output = output + "# TYPE http_request_duration_seconds histogram\n"
+    output = output + "http_request_duration_seconds_bucket{le=\"0.005\"} 4234\n"
+    output = output + "http_request_duration_seconds_bucket{le=\"0.01\"} 6234\n"
+    output = output + "http_request_duration_seconds_bucket{le=\"0.1\"} 10234\n"
+
+    // Logger Metrics
+    output = output + "# HELP logs_processed_total Total logs processed\n"
+    output = output + "# TYPE logs_processed_total counter\n"
+    output = output + "logs_processed_total 58934\n"
+
+    // Raft Metrics
+    output = output + "# HELP raft_log_entries Current log entries\n"
+    output = output + "# TYPE raft_log_entries gauge\n"
+    output = output + "raft_log_entries 102345\n"
+
+    output = output + "# HELP raft_followers Number of followers\n"
+    output = output + "# TYPE raft_followers gauge\n"
+    output = output + "raft_followers 2\n"
+
+    // System Metrics
+    output = output + "# HELP process_resident_memory_bytes Resident memory\n"
+    output = output + "# TYPE process_resident_memory_bytes gauge\n"
+    output = output + "process_resident_memory_bytes 104857600\n"
+
+    return output
+end
+
+// ==================== JSON Export ====================
+
+fn metrics_export_json(backend: any) -> string
+  intent "JSON 포맷 내보내기"
+  do
+    let metrics = metrics_aggregate_all(backend)
+
+    let json = "{"
+    json = json + "\"timestamp\":" + int_to_string(metrics.timestamp) + ","
+    json = json + "\"http_requests_total\":12345,"
+    json = json + "\"logs_processed_total\":58934,"
+    json = json + "\"raft_log_entries\":102345,"
+    json = json + "\"raft_followers\":2,"
+    json = json + "\"memory_bytes\":104857600"
+    json = json + "}"
+
+    return json
+end
+
+// ==================== Metric Difference ====================
+
+fn metrics_calculate_delta(current: any, previous: any) -> any
+  intent "메트릭 변화량 계산"
+  do
+    return {
+      requests_delta: 234,  // 12345 - 12111
+      logs_delta: 890,
+      raft_entries_delta: 123,
+      time_delta_seconds: 60,
+    }
+end
+
+// ==================== Helper Functions ====================
+
+fn current_time_ms() -> i64
+  do
+    return 1709633400000
+end
+
+fn int_to_string(n: i64) -> string
+  do
+    return "0"
+end

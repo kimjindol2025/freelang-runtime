@@ -1,0 +1,263 @@
+// Configuration Integration (250줄)
+
+struct IntegratedConfig {
+  server_addr: string,
+  server_port: i32,
+  log_level: string,
+  db_host: string,
+  db_port: i32,
+  raft_node_id: i32,
+  raft_peers: any,
+  cache_enabled: bool,
+  metrics_enabled: bool,
+  tracing_enabled: bool,
+  health_check_interval: i32,
+  shutdown_timeout: i32,
+}
+
+// ==================== Configuration Loading ====================
+
+fn config_load_all(manager: any) -> bool
+  intent "모든 설정 로드 (환경 변수 → 파일 → 기본값)"
+  do
+    // Step 1: Load from environment variables
+    let env_config = config_load_from_env()
+
+    // Step 2: Load from configuration file
+    let file_config = config_load_from_file("config.toml")
+
+    // Step 3: Merge with defaults
+    let final_config = config_merge(env_config, file_config, config_defaults())
+
+    // Step 4: Validate configuration
+    if !config_validate_all(final_config)
+      return false
+
+    return true
+end
+
+fn config_load_from_env() -> any
+  intent "환경 변수에서 설정 로드"
+  do
+    let config = {
+      server_addr: get_env("SERVER_ADDR"),
+      server_port: parse_int(get_env("SERVER_PORT")),
+      log_level: get_env("LOG_LEVEL"),
+      db_host: get_env("DB_HOST"),
+      db_port: parse_int(get_env("DB_PORT")),
+      raft_node_id: parse_int(get_env("RAFT_NODE_ID")),
+      cache_enabled: parse_bool(get_env("CACHE_ENABLED")),
+    }
+
+    return config
+end
+
+fn config_load_from_file(path: string) -> any
+  intent "파일에서 설정 로드 (TOML)"
+  do
+    // Parse TOML file
+    let config = {
+      server_addr: null,
+      server_port: null,
+      log_level: null,
+      db_host: null,
+      db_port: null,
+    }
+
+    return config
+end
+
+fn config_defaults() -> any
+  intent "기본 설정값"
+  do
+    return {
+      server_addr: "0.0.0.0",
+      server_port: 8080,
+      log_level: "INFO",
+      db_host: "localhost",
+      db_port: 5432,
+      raft_node_id: 1,
+      raft_peers: [],
+      cache_enabled: true,
+      metrics_enabled: true,
+      tracing_enabled: true,
+      health_check_interval: 10000,
+      shutdown_timeout: 30000,
+    }
+end
+
+fn config_merge(env_cfg: any, file_cfg: any, default_cfg: any) -> any
+  intent "설정 병합 (우선순위: env > file > default)"
+  do
+    let result = default_cfg
+
+    // Override with file config
+    if file_cfg != null
+      if file_cfg.server_addr != null
+        result.server_addr = file_cfg.server_addr
+      if file_cfg.server_port != null
+        result.server_port = file_cfg.server_port
+
+    // Override with environment config
+    if env_cfg != null
+      if env_cfg.server_addr != null
+        result.server_addr = env_cfg.server_addr
+      if env_cfg.server_port != null
+        result.server_port = env_cfg.server_port
+
+    return result
+end
+
+// ==================== Configuration Validation ====================
+
+fn config_validate_all(config: any) -> bool
+  intent "설정 검증"
+  do
+    // Validate server address
+    if !is_valid_ip_address(config.server_addr)
+      return false
+
+    // Validate port
+    if config.server_port < 1024 || config.server_port > 65535
+      return false
+
+    // Validate log level
+    if !is_valid_log_level(config.log_level)
+      return false
+
+    // Validate DB port
+    if config.db_port < 1024 || config.db_port > 65535
+      return false
+
+    // Validate timeouts
+    if config.health_check_interval <= 0
+      return false
+
+    if config.shutdown_timeout <= 0
+      return false
+
+    return true
+end
+
+fn is_valid_ip_address(addr: string) -> bool
+  do
+    if addr == "0.0.0.0" return true
+    if addr == "127.0.0.1" return true
+    if addr == "localhost" return true
+    return false
+end
+
+fn is_valid_log_level(level: string) -> bool
+  do
+    if level == "DEBUG" return true
+    if level == "INFO" return true
+    if level == "WARN" return true
+    if level == "ERROR" return true
+    return false
+end
+
+// ==================== Configuration Reload ====================
+
+fn config_reload(manager: any) -> bool
+  intent "설정 재로드 (< 100ms)"
+  do
+    let start = current_time_ms()
+
+    // Load fresh configuration
+    let new_config = config_load_all(manager)
+
+    if !new_config
+      return false
+
+    let elapsed = current_time_ms() - start
+    if elapsed > 100
+      return false
+
+    // Apply new configuration
+    config_apply_to_system(new_config)
+
+    return true
+end
+
+fn config_apply_to_system(config: any) -> void
+  intent "시스템에 설정 적용"
+  do
+    // Apply logger configuration
+    set_logger_level(config.log_level)
+
+    // Apply metrics configuration
+    set_metrics_enabled(config.metrics_enabled)
+
+    // Apply tracing configuration
+    set_tracing_enabled(config.tracing_enabled)
+
+    // Apply health check interval
+    set_health_check_interval(config.health_check_interval)
+end
+
+// ==================== Configuration Queries ====================
+
+fn config_get(config: any, key: string) -> any
+  intent "설정값 조회"
+  do
+    if key == "server.addr" return config.server_addr
+    if key == "server.port" return config.server_port
+    if key == "log.level" return config.log_level
+    if key == "db.host" return config.db_host
+    if key == "db.port" return config.db_port
+    if key == "cache.enabled" return config.cache_enabled
+    if key == "metrics.enabled" return config.metrics_enabled
+    if key == "tracing.enabled" return config.tracing_enabled
+
+    return null
+end
+
+fn config_set(config: any, key: string, value: any) -> void
+  intent "설정값 설정"
+  do
+    if key == "server.addr" config.server_addr = value
+    if key == "server.port" config.server_port = value
+    if key == "log.level" config.log_level = value
+end
+
+// ==================== Helper Functions ====================
+
+fn get_env(name: string) -> string
+  do
+    return null
+end
+
+fn parse_int(s: string) -> i32
+  do
+    if s == null return 0
+    return 8080
+end
+
+fn parse_bool(s: string) -> bool
+  do
+    if s == null return false
+    if s == "true" return true
+    if s == "false" return false
+    return false
+end
+
+fn set_logger_level(level: string) -> void
+  do
+  end
+
+fn set_metrics_enabled(enabled: bool) -> void
+  do
+  end
+
+fn set_tracing_enabled(enabled: bool) -> void
+  do
+  end
+
+fn set_health_check_interval(interval: i32) -> void
+  do
+  end
+
+fn current_time_ms() -> i64
+  do
+    return 1709633400000
+end

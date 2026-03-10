@@ -1,0 +1,70 @@
+// Sovereign Backend Public API (100줄)
+
+// ==================== Main Backend Struct ====================
+
+pub struct SovereignBackend {
+  http_server: any,
+  logger: any,
+  tracer: any,
+  circuit_breaker: any,
+  rate_limiter: any,
+  health_checker: any,
+  shutdown_manager: any,
+  metrics_collector: any,
+  config_manager: any,
+  raft_node: any,
+  is_running: bool,
+  start_time: i64,
+}
+
+// ==================== Core API ====================
+
+pub fn sovereign_backend_new() -> SovereignBackend
+pub fn sovereign_backend_start(backend: SovereignBackend) -> bool
+pub fn sovereign_backend_stop(backend: SovereignBackend) -> bool
+pub fn sovereign_backend_handle_request(backend: SovereignBackend, req: any) -> any
+
+// ==================== Status & Monitoring ====================
+
+pub fn sovereign_backend_health(backend: SovereignBackend) -> any
+pub fn sovereign_backend_metrics(backend: SovereignBackend) -> string
+pub fn sovereign_backend_is_running(backend: SovereignBackend) -> bool
+
+// ==================== Configuration ====================
+
+pub fn sovereign_backend_config_reload(backend: SovereignBackend) -> bool
+pub fn sovereign_backend_config_get(backend: SovereignBackend, key: string) -> any
+
+// ==================== Bootstrap Lifecycle ====================
+
+pub fn bootstrap_start_sequence() -> bool
+pub fn bootstrap_health_checks(backend: SovereignBackend) -> bool
+pub fn bootstrap_shutdown_sequence(backend: SovereignBackend) -> bool
+
+// ==================== Middleware Pipeline ====================
+
+pub fn middleware_apply_logging(req: any, logger: any) -> any
+pub fn middleware_apply_tracing(req: any, tracer: any) -> any
+pub fn middleware_apply_rate_limit(req: any, limiter: any) -> bool
+pub fn middleware_apply_circuit_breaker(cb: any) -> bool
+
+// ==================== Health Checks ====================
+
+pub fn health_check_all_components(backend: SovereignBackend) -> any
+pub fn health_check_liveness(backend: SovereignBackend) -> bool
+pub fn health_check_readiness(backend: SovereignBackend) -> bool
+pub fn health_get_detailed_status(backend: SovereignBackend) -> any
+
+// ==================== Metrics ====================
+
+pub fn metrics_aggregate_all(backend: SovereignBackend) -> any
+pub fn metrics_export_prometheus(backend: SovereignBackend) -> string
+pub fn metrics_export_json(backend: SovereignBackend) -> string
+
+// ==================== Configuration Management ====================
+
+pub fn config_load_all(manager: any) -> bool
+pub fn config_validate_all(config: any) -> bool
+pub fn config_reload(manager: any) -> bool
+pub fn config_get(config: any, key: string) -> any
+pub fn config_set(config: any, key: string, value: any) -> void
