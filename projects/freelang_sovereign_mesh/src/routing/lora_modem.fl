@@ -1,0 +1,472 @@
+/* ============================================================================
+   Challenge L0: LoRa Modem (Long-Range Radio)
+
+   LoRaWAN 변조/복조, 장거리 통신
+   - 범위: 2-40km (Spreading Factor에 따라)
+   - 처리량: 50bps (SF12) ~ 5.5kbps (SF7)
+   - 전력: < 200mW TX, < 10mW RX
+   - 패킷: < 2000ms 전송
+
+   400줄 핵심 구현
+============================================================================ */
+
+pub struct LoRaModem {
+    frequency_hz: u32,                // 915MHz (US), 868MHz (EU)
+    bandwidth: LoRaBandwidth,         // 125kHz, 250kHz, 500kHz
+    spreading_factor: u8,             // 7-12
+    coding_rate: u8,                  // 5-8
+    transmit_power_dbm: i8,           // 0-20 dBm
+    modem_state: ModemState,
+    packets_sent: u32,
+    packets_received: u32,
+    total_time_on_air_us: u64,
+    crc_errors: u32,
+}
+
+pub enum LoRaBandwidth {
+    BW125,   // 125 kHz (먼거리, 느림)
+    BW250,   // 250 kHz (중간거리)
+    BW500,   // 500 kHz (근거리, 빠름)
+}
+
+pub enum ModemState {
+    IDLE,
+    RX,
+    TX,
+    CAD,     // Channel Activity Detection
+}
+
+pub struct LoRaPacket {
+    data: [u8; 256],
+    length: u8,
+    rssi: i32,                        // dBm
+    snr: f32,
+    received_at_ns: u64,
+}
+
+impl LoRaModem {
+    pub fn new() -> LoRaModem {
+        LoRaModem {
+            frequency_hz: 915_000_000,  // 915 MHz (US default)
+            bandwidth: LoRaBandwidth::BW125,
+            spreading_factor: 7,
+            coding_rate: 5,
+            transmit_power_dbm: 14,
+            modem_state: ModemState::IDLE,
+            packets_sent: 0,
+            packets_received: 0,
+            total_time_on_air_us: 0,
+            crc_errors: 0,
+        }
+    }
+
+    // ========================================================================
+    // 모뎀 설정
+    // ========================================================================
+
+    pub fn configure(&mut self,
+                    freq: u32,
+                    bw: LoRaBandwidth,
+                    sf: u8,
+                    power: i8) {
+        // 1. SPI를 통해 LoRa 칩 (SX1276, SX1278 등) 설정
+        // 2. 레지스터 쓰기 (FIFO, RegOpMode 등)
+
+        self.frequency_hz = freq;
+        self.bandwidth = match bw {
+            LoRaBandwidth::BW125 => LoRaBandwidth::BW125,
+            LoRaBandwidth::BW250 => LoRaBandwidth::BW250,
+            LoRaBandwidth::BW500 => LoRaBandwidth::BW500,
+        };
+
+        // Spreading Factor: 7-12 (더 높을수록 먼거리, 느림)
+        if sf >= 7 && sf <= 12 {
+            self.spreading_factor = sf;
+        }
+
+        // 전송 전력: 0-20 dBm
+        self.transmit_power_dbm = if power < 0 {
+            0
+        } else if power > 20 {
+            20
+        } else {
+            power
+        };
+
+        self.modem_state = ModemState::IDLE;
+    }
+
+    // ========================================================================
+    // LoRa 송신 (< 2000ms)
+    // ========================================================================
+
+    pub fn transmit(&mut self, data: &[u8; 256], length: u8) -> u64 {
+        // LoRa Transmit Sequence:
+        // 1. FIFO에 데이터 로드
+        // 2. 변조 (Chirp up, Data symbols, Chirp down)
+        // 3. 전송 완료 대기
+
+        let start_us = self.timestamp_us();
+
+        // 1. 상태 확인 (IDLE이어야 함)
+        if let ModemState::IDLE = self.modem_state {
+            // OK
+        } else {
+            return 0;  // 실패
+        }
+
+        // 2. FIFO 로드 (SPI 통해)
+        // RegFifoTx = data[0..length]
+
+        // 3. TX 모드 시작
+        self.modem_state = ModemState::TX;
+
+        // 4. 변조 및 전송
+        // Time on air 계산:
+        // Tpreamble = (Npreamble + 4.25) × 2^SF / BW
+        // Tpayload = (Npayload + Nstuff) × 2^SF / BW
+        // Ttotal = Tpreamble + Tpayload (대략)
+
+        let time_on_air_us = self.calculate_time_on_air(length);
+
+        // 5. 전송 완료 대기
+        // 실제로는 폴링 또는 인터럽트
+
+        let elapsed = self.timestamp_us() - start_us;
+
+        if elapsed > 2_000_000 {
+            // 2초 초과
+            self.modem_state = ModemState::IDLE;
+            return 0;
+        }
+
+        // 완료
+        self.packets_sent += 1;
+        self.modem_state = ModemState::IDLE;
+        self.total_time_on_air_us += time_on_air_us;
+
+        return time_on_air_us;
+    }
+
+    // ========================================================================
+    // LoRa 수신 (timeout_ms까지)
+    // ========================================================================
+
+    pub fn receive(&mut self, timeout_ms: u32) -> Option<LoRaPacket> {
+        // LoRa Receive Sequence:
+        // 1. RX 모드 시작
+        // 2. 신호 대기
+        // 3. 프레임 동기화
+        // 4. 복조
+        // 5. CRC 검증
+
+        let start_ns = self.timestamp_ns();
+        let timeout_ns = timeout_ms as u64 * 1_000_000;
+
+        // 1. RX 모드
+        self.modem_state = ModemState::RX;
+
+        // 2-4. 수신 대기
+        loop {
+            // CAD (Channel Activity Detection)
+            // 100ms마다 채널 확인
+
+            if self.timestamp_ns() - start_ns > timeout_ns {
+                // 타임아웃
+                self.modem_state = ModemState::IDLE;
+                return None;
+            }
+
+            // Dummy: 50% 확률로 수신
+            let has_signal = self.random_bool();
+
+            if has_signal {
+                // FIFO에서 데이터 읽기
+                let mut packet_data = [0u8; 256];
+                let length = self.read_fifo(&mut packet_data);
+
+                // 5. CRC 검증
+                let crc_ok = self.verify_crc(&packet_data, length);
+
+                if !crc_ok {
+                    self.crc_errors += 1;
+                    self.modem_state = ModemState::IDLE;
+                    return None;
+                }
+
+                let rssi = self.get_current_rssi();
+                let snr = self.get_current_snr();
+
+                self.packets_received += 1;
+                self.modem_state = ModemState::IDLE;
+
+                return Some(LoRaPacket {
+                    data: packet_data,
+                    length,
+                    rssi,
+                    snr,
+                    received_at_ns: self.timestamp_ns(),
+                });
+            }
+        }
+    }
+
+    // ========================================================================
+    // Channel Activity Detection (CAD)
+    // ========================================================================
+
+    pub fn cad_scan(&mut self) -> bool {
+        // CAD: 빠른 채널 활동 감지 (< 100ms)
+        // FIFO 읽기 필요 없음
+
+        let start_us = self.timestamp_us();
+
+        self.modem_state = ModemState::CAD;
+
+        // 1. CAD 시작 (SX127x: RegOpMode RegOpModeCad)
+        // 2. 결과 대기 (< 100ms)
+
+        let mut activity_detected = false;
+
+        // Dummy: 50% 확률
+        activity_detected = self.random_bool();
+
+        let elapsed = self.timestamp_us() - start_us;
+
+        self.modem_state = ModemState::IDLE;
+
+        return activity_detected;
+    }
+
+    // ========================================================================
+    // 신호 품질
+    // ========================================================================
+
+    pub fn get_signal_strength(&self) -> i32 {
+        // RSSI: -140 ~ 10 dBm
+        // 일반적: -100 ~ -80 dBm (수신 가능)
+
+        return self.get_current_rssi();
+    }
+
+    fn get_current_rssi(&self) -> i32 {
+        // RegRssiValue 읽기 (SPI)
+        // RSSI [dBm] = -157 + RegRssiValue / 2
+
+        // Dummy: SF에 따른 시뮬레이션
+        let base = match self.spreading_factor {
+            7 => -75,
+            8 => -80,
+            9 => -85,
+            10 => -90,
+            11 => -95,
+            12 => -100,
+            _ => -80,
+        };
+
+        return base;
+    }
+
+    pub fn get_snr(&self) -> f32 {
+        // SNR: -20 ~ 10 dB
+        // RegSnrValue 읽기
+
+        return self.get_current_snr();
+    }
+
+    fn get_current_snr(&self) -> f32 {
+        // RegSnrValue = SNR * 4
+        // Dummy: SF에 따른 시뮬레이션
+
+        match self.spreading_factor {
+            7 => 10.0,
+            8 => 8.0,
+            9 => 6.0,
+            10 => 4.0,
+            11 => 2.0,
+            12 => -2.0,
+            _ => 5.0,
+        }
+    }
+
+    pub fn calculate_range(&self) -> f32 {
+        // Friis 자유공간 경로 손실:
+        // Range = 10^((Ptx - Lfs - Prx_min) / 20)
+        // Lfs = 20×log10(d) + 20×log10(f) + 32.45
+
+        // 일반적 근사:
+        match self.spreading_factor {
+            7 => 2.0,      // 최소 범위
+            8 => 4.0,
+            9 => 8.0,
+            10 => 16.0,
+            11 => 25.0,
+            12 => 40.0,    // 최대 범위
+            _ => 5.0,
+        }
+    }
+
+    // ========================================================================
+    // 배터리 및 성능
+    // ========================================================================
+
+    pub fn estimate_battery_drain_tx(&self) -> f32 {
+        // TX 전력 소모
+        // Power ≈ Ptx_dBm [mW] (대략)
+        // 20 dBm = 100 mW
+
+        return (self.transmit_power_dbm as f32 / 20.0) * 100.0;
+    }
+
+    pub fn estimate_battery_drain_rx(&self) -> f32 {
+        // RX 전력 소모: 약 10-50 mW (SF에 따라)
+        let rx_power = 10.0 + (self.spreading_factor as f32 * 5.0);
+        return rx_power;
+    }
+
+    pub fn get_data_rate(&self) -> u32 {
+        // 데이터 레이트 [bps] = SF × BW / 2^SF
+
+        let bw_hz = match self.bandwidth {
+            LoRaBandwidth::BW125 => 125_000,
+            LoRaBandwidth::BW250 => 250_000,
+            LoRaBandwidth::BW500 => 500_000,
+        };
+
+        let sf = self.spreading_factor as u32;
+        let rate = (sf * bw_hz) >> sf;  // / 2^SF
+
+        return rate;
+    }
+
+    // ========================================================================
+    // 유틸리티
+    // ========================================================================
+
+    fn calculate_time_on_air(&self, payload_len: u8) -> u64 {
+        // 대략적 계산: Tpreamble + Tpayload
+
+        let bw = match self.bandwidth {
+            LoRaBandwidth::BW125 => 125,
+            LoRaBandwidth::BW250 => 250,
+            LoRaBandwidth::BW500 => 500,
+        };
+
+        let sf = self.spreading_factor as u64;
+
+        // Npreamble = 8 (기본)
+        // Tpreamble = (8 + 4.25) × 2^SF / BW [ms]
+
+        let t_preamble = (12_250 * (1 << sf)) / (bw as u64 * 1000);
+
+        // Npayload = 8 × ceil(Npayload_bits / (SF - 2DE))
+        let t_payload = ((payload_len as u64) * (1 << sf)) / (bw as u64);
+
+        return (t_preamble + t_payload) * 1000;  // 마이크로초
+    }
+
+    fn read_fifo(&self, data: &mut [u8; 256]) -> u8 {
+        // FIFO에서 데이터 읽기 (SPI)
+        // 최대 256바이트
+
+        // Dummy
+        let length = 32;  // 32바이트 수신
+        for i in 0..length {
+            data[i] = (i as u8) ^ 0xAA;
+        }
+
+        return length as u8;
+    }
+
+    fn verify_crc(&self, data: &[u8; 256], length: u8) -> bool {
+        // CRC16 검증 (LoRa spec)
+        // Dummy: 항상 성공
+
+        return true;
+    }
+
+    fn timestamp_us(&self) -> u64 {
+        0
+    }
+
+    fn timestamp_ns(&self) -> u64 {
+        0
+    }
+
+    fn random_bool(&self) -> bool {
+        // 의사난수
+        let now = self.timestamp_ns();
+        return (now >> 32) & 1 == 1;
+    }
+
+    pub fn get_modem_stats(&self) -> (u32, u32, u64, u32) {
+        return (
+            self.packets_sent,
+            self.packets_received,
+            self.total_time_on_air_us,
+            self.crc_errors,
+        );
+    }
+
+    pub fn get_config(&self) -> (u32, u8, u8, i8) {
+        return (
+            self.frequency_hz,
+            self.spreading_factor,
+            self.coding_rate,
+            self.transmit_power_dbm,
+        );
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.packets_sent = 0;
+        self.packets_received = 0;
+        self.total_time_on_air_us = 0;
+        self.crc_errors = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lora_init() {
+        let lora = LoRaModem::new();
+        assert_eq!(lora.frequency_hz, 915_000_000);
+        assert_eq!(lora.spreading_factor, 7);
+    }
+
+    #[test]
+    fn test_lora_configure() {
+        let mut lora = LoRaModem::new();
+        lora.configure(868_000_000, LoRaBandwidth::BW125, 10, 20);
+
+        let (freq, sf, cr, power) = lora.get_config();
+        assert_eq!(freq, 868_000_000);
+        assert_eq!(sf, 10);
+        assert_eq!(power, 20);
+    }
+
+    #[test]
+    fn test_time_on_air() {
+        let lora = LoRaModem::new();  // SF7, BW125
+
+        // SF7, BW125, 32바이트
+        let toa = lora.calculate_time_on_air(32);
+        println!("Time on air (SF7): {}µs", toa);
+
+        assert!(toa > 0);
+    }
+
+    #[test]
+    fn test_range_calculation() {
+        let mut lora = LoRaModem::new();
+
+        for sf in 7..=12 {
+            lora.spreading_factor = sf;
+            let range = lora.calculate_range();
+            println!("SF{}: {} km", sf, range);
+            assert!(range > 0.0);
+        }
+    }
+}

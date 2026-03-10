@@ -1,0 +1,504 @@
+/* ============================================================================
+   Challenge L0: Radio HAL (Hardware Abstraction Layer)
+
+   GPIO, I2C, SPI 저수준 제어
+   - 하드웨어 추상화
+   - 타이밍: GPIO < 100ns, I2C < 10ms, SPI < 1ms
+   - ARM MMIO (Memory-Mapped I/O) 패턴
+
+   400줄 핵심 구현
+============================================================================ */
+
+pub struct RadioHAL {
+    gpio_pins: [GPIOPin; 32],         // GPIO 0-31
+    i2c_bus: I2CBus,                  // I2C 통신
+    spi_bus: SPIBus,                  // SPI 통신
+    interrupt_count: u32,
+    hal_initialized: bool,
+}
+
+pub struct GPIOPin {
+    pin_id: u8,
+    mode: PinMode,                    // INPUT, OUTPUT, ALT
+    level: bool,
+    irq_enabled: bool,
+    last_change_ns: u64,
+}
+
+pub struct I2CBus {
+    frequency_hz: u32,                // 100kHz ~ 1MHz
+    address: u8,
+    bytes_transferred: u64,
+    errors: u32,
+    last_op_time_us: u64,
+}
+
+pub struct SPIBus {
+    clock_speed_hz: u32,              // 1MHz ~ 10MHz
+    mode: SPIMode,
+    bytes_transferred: u64,
+    errors: u32,
+    chip_select_pin: u8,
+}
+
+pub enum PinMode {
+    INPUT,                            // 입력 (고임피던스)
+    OUTPUT,                           // 출력 (드라이브)
+    ALT,                              // 대체 함수 (I2C, SPI)
+}
+
+pub enum SPIMode {
+    MODE0,   // CPOL=0, CPHA=0
+    MODE1,   // CPOL=0, CPHA=1
+    MODE2,   // CPOL=1, CPHA=0
+    MODE3,   // CPOL=1, CPHA=1
+}
+
+pub enum I2CResult {
+    Success,
+    NAK,                              // No Acknowledge
+    Timeout,
+    BusError,
+}
+
+impl RadioHAL {
+    pub fn new() -> RadioHAL {
+        RadioHAL {
+            gpio_pins: [GPIOPin {
+                pin_id: 0,
+                mode: PinMode::INPUT,
+                level: false,
+                irq_enabled: false,
+                last_change_ns: 0,
+            }; 32],
+            i2c_bus: I2CBus {
+                frequency_hz: 100_000,
+                address: 0,
+                bytes_transferred: 0,
+                errors: 0,
+                last_op_time_us: 0,
+            },
+            spi_bus: SPIBus {
+                clock_speed_hz: 1_000_000,
+                mode: SPIMode::MODE0,
+                bytes_transferred: 0,
+                errors: 0,
+                chip_select_pin: 8,
+            },
+            interrupt_count: 0,
+            hal_initialized: false,
+        }
+    }
+
+    // ========================================================================
+    // GPIO 제어 (< 100ns 응답)
+    // ========================================================================
+
+    pub fn gpio_init(&mut self, pin: u8) {
+        if pin >= 32 {
+            return;
+        }
+
+        self.gpio_pins[pin as usize].pin_id = pin;
+        self.gpio_pins[pin as usize].mode = PinMode::INPUT;
+        self.gpio_pins[pin as usize].level = false;
+        self.gpio_pins[pin as usize].irq_enabled = false;
+    }
+
+    pub fn gpio_set_mode(&mut self, pin: u8, mode: PinMode) {
+        if pin >= 32 {
+            return;
+        }
+
+        // 1. MMIO: GPIO_FSEL 레지스터 (3비트 × 핀)
+        // 레지스터 = GPIO_FSEL (0x20200000 + offset)
+        // 0 = INPUT, 1 = OUTPUT, 4 = ALT0 (I2C/SPI)
+
+        self.gpio_pins[pin as usize].mode = match mode {
+            PinMode::INPUT => PinMode::INPUT,
+            PinMode::OUTPUT => PinMode::OUTPUT,
+            PinMode::ALT => PinMode::ALT,
+        };
+
+        // 2. 상태 기록
+        self.gpio_pins[pin as usize].last_change_ns = self.timestamp_ns();
+    }
+
+    pub fn gpio_write(&mut self, pin: u8, level: bool) {
+        if pin >= 32 {
+            return;
+        }
+
+        // 1. 모드 검증 (OUTPUT이어야 함)
+        match self.gpio_pins[pin as usize].mode {
+            PinMode::OUTPUT => {},
+            _ => return,  // 실패
+        }
+
+        // 2. MMIO: GPIO_SET / GPIO_CLR 레지스터
+        // SET (0x2020001C): bit=1이면 해당 핀 HIGH
+        // CLR (0x20200028): bit=1이면 해당 핀 LOW
+
+        self.gpio_pins[pin as usize].level = level;
+        self.gpio_pins[pin as usize].last_change_ns = self.timestamp_ns();
+    }
+
+    pub fn gpio_read(&self, pin: u8) -> bool {
+        if pin >= 32 {
+            return false;
+        }
+
+        // MMIO: GPIO_LEV 레지스터 (0x20200034)
+        // 각 비트 = 해당 핀의 현재 레벨
+
+        return self.gpio_pins[pin as usize].level;
+    }
+
+    pub fn gpio_irq_enable(&mut self, pin: u8) {
+        if pin >= 32 {
+            return;
+        }
+
+        // 1. MMIO: GPIO_EDS (Edge Detect Status)
+        // 2. GPIO_REN (Rising Edge Enable) 또는 GPIO_FEN (Falling Edge Enable)
+        // 3. 인터럽트 활성화
+
+        self.gpio_pins[pin as usize].irq_enabled = true;
+    }
+
+    pub fn gpio_irq_disable(&mut self, pin: u8) {
+        if pin >= 32 {
+            return;
+        }
+
+        self.gpio_pins[pin as usize].irq_enabled = false;
+    }
+
+    pub fn gpio_get_stats(&self) -> (u8, u32) {
+        // (활성 핀 수, 총 변화 이벤트)
+        let mut active = 0;
+        for pin in &self.gpio_pins {
+            if pin.irq_enabled {
+                active += 1;
+            }
+        }
+        return (active, self.interrupt_count);
+    }
+
+    // ========================================================================
+    // I2C 통신 (< 10ms)
+    // ========================================================================
+
+    pub fn i2c_init(&mut self, address: u8, freq_hz: u32) {
+        // 1. SDA (GPIO2), SCL (GPIO3) 활성화 (ALT mode)
+        self.gpio_set_mode(2, PinMode::ALT);  // SDA
+        self.gpio_set_mode(3, PinMode::ALT);  // SCL
+
+        // 2. I2C 설정
+        self.i2c_bus.address = address;
+        self.i2c_bus.frequency_hz = freq_hz;
+
+        // 3. MMIO: I2C_C (Control) 레지스터
+        // I2C_CLKDIV = System_Clock / (2 × frequency_hz)
+    }
+
+    pub fn i2c_write(&mut self,
+                    slave_addr: u8,
+                    data: &[u8]) -> I2CResult {
+        // I2C Write Sequence:
+        // 1. START 신호
+        // 2. 주소 + WRITE (0)
+        // 3. 데이터 전송 (8비트 × len)
+        // 4. STOP 신호
+
+        let start_us = self.timestamp_us();
+
+        // 1. START condition
+        // SDA: 1→0 (while SCL=1)
+
+        // 2. Send address + WRITE
+        for i in 0..8 {
+            let bit = if (slave_addr >> (7 - i)) & 1 == 1 { 1 } else { 0 };
+            // Clock + Data
+        }
+
+        // Check ACK from slave
+        // SDA should go LOW
+
+        // 3. Send data
+        for byte in data {
+            for i in 0..8 {
+                let bit = if (byte >> (7 - i)) & 1 == 1 { 1 } else { 0 };
+                // Clock + Data
+            }
+            // Check ACK
+        }
+
+        // 4. STOP condition
+        // SDA: 0→1 (while SCL=1)
+
+        let elapsed = self.timestamp_us() - start_us;
+        self.i2c_bus.last_op_time_us = elapsed;
+        self.i2c_bus.bytes_transferred += data.len() as u64;
+
+        // 성공 또는 NAK 반환
+        if elapsed > 10_000 {
+            self.i2c_bus.errors += 1;
+            return I2CResult::Timeout;
+        }
+
+        return I2CResult::Success;
+    }
+
+    pub fn i2c_read(&mut self,
+                   slave_addr: u8,
+                   len: usize) -> (I2CResult, [u8; 256]) {
+        // I2C Read Sequence:
+        // 1. START
+        // 2. 주소 + READ (1)
+        // 3. 데이터 수신
+        // 4. STOP
+
+        let start_us = self.timestamp_us();
+
+        let mut result_data = [0u8; 256];
+
+        // 1. START
+
+        // 2. Send address + READ
+        // (similar to write, but bit[0] = 1)
+
+        // 3. Read data bytes
+        for i in 0..len {
+            let mut byte = 0u8;
+            for bit_idx in 0..8 {
+                // Sample SDA
+                // byte |= (sda_level << (7 - bit_idx))
+            }
+            result_data[i] = byte;
+
+            // Send ACK/NAK
+            if i < len - 1 {
+                // ACK: SDA=0
+            } else {
+                // NAK: SDA=1
+            }
+        }
+
+        // 4. STOP
+
+        let elapsed = self.timestamp_us() - start_us;
+        self.i2c_bus.last_op_time_us = elapsed;
+        self.i2c_bus.bytes_transferred += len as u64;
+
+        if elapsed > 10_000 {
+            self.i2c_bus.errors += 1;
+            return (I2CResult::Timeout, result_data);
+        }
+
+        return (I2CResult::Success, result_data);
+    }
+
+    pub fn i2c_get_stats(&self) -> (u64, u32, u64) {
+        return (
+            self.i2c_bus.bytes_transferred,
+            self.i2c_bus.errors,
+            self.i2c_bus.last_op_time_us,
+        );
+    }
+
+    // ========================================================================
+    // SPI 통신 (< 1ms)
+    // ========================================================================
+
+    pub fn spi_init(&mut self, speed_hz: u32, mode: SPIMode) {
+        // CLK (GPIO11), MOSI (GPIO10), MISO (GPIO9), CS (GPIO8)
+        self.gpio_set_mode(8, PinMode::OUTPUT);   // CS
+        self.gpio_set_mode(9, PinMode::ALT);      // MISO
+        self.gpio_set_mode(10, PinMode::ALT);     // MOSI
+        self.gpio_set_mode(11, PinMode::ALT);     // CLK
+
+        self.spi_bus.clock_speed_hz = speed_hz;
+        self.spi_bus.mode = match mode {
+            SPIMode::MODE0 => SPIMode::MODE0,
+            SPIMode::MODE1 => SPIMode::MODE1,
+            SPIMode::MODE2 => SPIMode::MODE2,
+            SPIMode::MODE3 => SPIMode::MODE3,
+        };
+    }
+
+    pub fn spi_transfer(&mut self, tx_data: &[u8]) -> [u8; 256] {
+        // SPI Full-Duplex Transfer:
+        // 1. CS LOW
+        // 2. Clock out TX bits, Clock in RX bits
+        // 3. CS HIGH
+
+        let start_us = self.timestamp_us();
+        let mut rx_data = [0u8; 256];
+
+        // 1. CS LOW (pin 8)
+        // gpio_write(8, false);
+
+        // 2. Transfer loop
+        for i in 0..tx_data.len() {
+            let tx_byte = tx_data[i];
+
+            // Clock out each bit
+            for bit_idx in 0..8 {
+                let tx_bit = (tx_byte >> (7 - bit_idx)) & 1;
+
+                // MOSI = tx_bit
+                // Clock HIGH, wait, Clock LOW
+                // Sample MISO → rx_bit
+            }
+
+            // rx_data[i] accumulate
+            rx_data[i] = 0;  // Simulated
+        }
+
+        // 3. CS HIGH
+        // gpio_write(8, true);
+
+        let elapsed = self.timestamp_us() - start_us;
+        self.spi_bus.last_op_time_us = elapsed;
+        self.spi_bus.bytes_transferred += tx_data.len() as u64;
+
+        if elapsed > 1_000 {
+            self.spi_bus.errors += 1;
+        }
+
+        return rx_data;
+    }
+
+    pub fn spi_set_speed(&mut self, speed_hz: u32) {
+        // MMIO: SPI_CLK 레지스터
+        // SPI_CLK = System_Clock / (2 × speed_hz)
+
+        self.spi_bus.clock_speed_hz = speed_hz;
+    }
+
+    pub fn spi_get_stats(&self) -> (u64, u32, u64) {
+        return (
+            self.spi_bus.bytes_transferred,
+            self.spi_bus.errors,
+            self.spi_bus.last_op_time_us,
+        );
+    }
+
+    // ========================================================================
+    // HAL 상태 및 통계
+    // ========================================================================
+
+    pub fn init_hal(&mut self) -> bool {
+        // 전체 HAL 초기화
+
+        // 1. GPIO 모두 INPUT으로 리셋
+        for i in 0..32 {
+            self.gpio_init(i);
+        }
+
+        // 2. I2C/SPI 기본 설정
+        self.i2c_init(0x50, 100_000);  // 100kHz
+        self.spi_init(1_000_000, SPIMode::MODE0);  // 1MHz
+
+        self.hal_initialized = true;
+
+        return true;
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        return self.hal_initialized;
+    }
+
+    pub fn get_hal_status(&self) -> HalStatus {
+        HalStatus {
+            initialized: self.hal_initialized,
+            gpio_active: self.count_active_gpio(),
+            i2c_bytes: self.i2c_bus.bytes_transferred,
+            spi_bytes: self.spi_bus.bytes_transferred,
+            total_errors: self.i2c_bus.errors + self.spi_bus.errors,
+        }
+    }
+
+    fn count_active_gpio(&self) -> u8 {
+        let mut count = 0;
+        for pin in &self.gpio_pins {
+            if pin.irq_enabled {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    // ========================================================================
+    // 유틸리티
+    // ========================================================================
+
+    fn timestamp_ns(&self) -> u64 {
+        // 실제: 시스템 나노초
+        0
+    }
+
+    fn timestamp_us(&self) -> u64 {
+        // 실제: 시스템 마이크로초
+        0
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.i2c_bus.bytes_transferred = 0;
+        self.i2c_bus.errors = 0;
+        self.spi_bus.bytes_transferred = 0;
+        self.spi_bus.errors = 0;
+        self.interrupt_count = 0;
+    }
+}
+
+pub struct HalStatus {
+    pub initialized: bool,
+    pub gpio_active: u8,
+    pub i2c_bytes: u64,
+    pub spi_bytes: u64,
+    pub total_errors: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hal_init() {
+        let mut hal = RadioHAL::new();
+        assert!(!hal.is_initialized());
+
+        let result = hal.init_hal();
+        assert!(result);
+        assert!(hal.is_initialized());
+    }
+
+    #[test]
+    fn test_gpio_operations() {
+        let mut hal = RadioHAL::new();
+        hal.init_hal();
+
+        hal.gpio_set_mode(0, PinMode::OUTPUT);
+        hal.gpio_write(0, true);
+        assert!(hal.gpio_read(0));
+
+        hal.gpio_write(0, false);
+        assert!(!hal.gpio_read(0));
+    }
+
+    #[test]
+    fn test_i2c_basic() {
+        let mut hal = RadioHAL::new();
+        hal.init_hal();
+
+        let data = [0x42u8, 0x43u8];
+        let result = hal.i2c_write(0x50, &data);
+
+        match result {
+            I2CResult::Success => assert!(true),
+            _ => assert!(false, "I2C write failed"),
+        }
+    }
+}
