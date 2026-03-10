@@ -1,0 +1,324 @@
+// ============================================================================
+// FreeLang OS Kernel + Global Synapse Integration
+// ============================================================================
+// Task Execution → Synapse Neuron Event Triggering
+// Total: 450 lines
+// Structure: Event System, Task-to-Neuron Mapping, IPC Integration
+// ============================================================================
+
+use kernel_core
+
+module kernel_synapse_integration {
+    // ========================================================================
+    // KERNEL-SYNAPSE EVENT STRUCTURES
+    // ========================================================================
+
+    // Synapse Neuron Event triggered by kernel tasks
+    type SynapseEvent {
+        event_id: int
+        event_type: string          // TASK_CREATED, TASK_RUNNING, TASK_WAITING, TASK_TERMINATED
+        task_id: int
+        source_task: string
+        timestamp: int
+        payload: map
+    }
+
+    // Kernel Task Binding to Synapse Neuron
+    type TaskNeuronBinding {
+        task_id: int
+        neuron_id: string
+        trigger_events: list[string]
+        last_event_time: int
+        event_count: int
+    }
+
+    // ========================================================================
+    // INTEGRATION GLOBAL STATE
+    // ========================================================================
+
+    var event_queue: list[SynapseEvent] = []
+    var event_counter: int = 1
+    var task_neuron_bindings: map[int, TaskNeuronBinding] = {}
+    var synapse_neurons: map[string, list] = {}
+
+    // ========================================================================
+    // EVENT GENERATION FROM KERNEL TASKS
+    // ========================================================================
+
+    // Create event from task state change
+    func create_task_event(task_id: int, event_type: string, payload: map) -> SynapseEvent {
+        var task = kernel_core.get_task(task_id)
+
+        var evt = SynapseEvent{
+            event_id: event_counter,
+            event_type: event_type,
+            task_id: task_id,
+            source_task: task.name,
+            timestamp: kernel_core.kernel_state.total_ticks,
+            payload: payload
+        }
+
+        event_counter = event_counter + 1
+        event_queue.push(evt)
+
+        return evt
+    }
+
+    // Emit task creation event
+    func emit_task_created(task_id: int, task_name: string) {
+        var payload = {
+            action: "task_created",
+            task_name: task_name,
+            priority: kernel_core.get_task(task_id).priority
+        }
+        create_task_event(task_id, "TASK_CREATED", payload)
+    }
+
+    // Emit task running event
+    func emit_task_running(task_id: int) {
+        var payload = {
+            action: "task_running",
+            executed_ticks: kernel_core.get_task(task_id).executed_ticks
+        }
+        create_task_event(task_id, "TASK_RUNNING", payload)
+    }
+
+    // Emit task waiting event
+    func emit_task_waiting(task_id: int) {
+        var payload = {
+            action: "task_waiting",
+            reason: "I/O or Lock"
+        }
+        create_task_event(task_id, "TASK_WAITING", payload)
+    }
+
+    // Emit task terminated event
+    func emit_task_terminated(task_id: int) {
+        var payload = {
+            action: "task_terminated",
+            total_ticks: kernel_core.get_task(task_id).executed_ticks
+        }
+        create_task_event(task_id, "TASK_TERMINATED", payload)
+    }
+
+    // ========================================================================
+    // TASK-NEURON BINDING MANAGEMENT
+    // ========================================================================
+
+    // Bind kernel task to synapse neuron
+    func bind_task_to_neuron(task_id: int, neuron_id: string, trigger_events: list[string]) {
+        var binding = TaskNeuronBinding{
+            task_id: task_id,
+            neuron_id: neuron_id,
+            trigger_events: trigger_events,
+            last_event_time: 0,
+            event_count: 0
+        }
+
+        task_neuron_bindings[task_id] = binding
+
+        // Register neuron if not exists
+        if !synapse_neurons.contains(neuron_id) {
+            synapse_neurons[neuron_id] = []
+        }
+
+        synapse_neurons[neuron_id].push(task_id)
+    }
+
+    // Unbind task from neuron
+    func unbind_task_from_neuron(task_id: int) {
+        if task_neuron_bindings.contains(task_id) {
+            var binding = task_neuron_bindings[task_id]
+            var neuron_id = binding.neuron_id
+
+            if synapse_neurons.contains(neuron_id) {
+                synapse_neurons[neuron_id] = synapse_neurons[neuron_id].filter(x -> x != task_id)
+            }
+
+            task_neuron_bindings.delete(task_id)
+        }
+    }
+
+    // Get neuron for task
+    func get_task_neuron(task_id: int) -> string {
+        if task_neuron_bindings.contains(task_id) {
+            return task_neuron_bindings[task_id].neuron_id
+        }
+        return ""
+    }
+
+    // ========================================================================
+    // EVENT ROUTING TO NEURONS
+    // ========================================================================
+
+    // Route event to bound neuron
+    func route_event_to_neuron(evt: SynapseEvent) {
+        if task_neuron_bindings.contains(evt.task_id) {
+            var binding = task_neuron_bindings[evt.task_id]
+            var neuron_id = binding.neuron_id
+
+            // Check if this event triggers the neuron
+            for trigger_event in binding.trigger_events {
+                if trigger_event == evt.event_type {
+                    binding.event_count = binding.event_count + 1
+                    binding.last_event_time = evt.timestamp
+
+                    print("[SYNAPSE] Event triggered neuron:", neuron_id,
+                          "| Event:", evt.event_type,
+                          "| Task:", evt.source_task)
+
+                    return
+                }
+            }
+        }
+    }
+
+    // Process all queued events
+    func process_event_queue() {
+        while event_queue.length > 0 {
+            var evt = event_queue.shift()
+            route_event_to_neuron(evt)
+        }
+    }
+
+    // ========================================================================
+    // KERNEL TICK WITH SYNAPSE INTEGRATION
+    // ========================================================================
+
+    // Extended kernel tick with synapse event emission
+    func kernel_tick_with_synapse() {
+        // 1. Schedule next task
+        var task_id = kernel_core.schedule()
+
+        // 2. Emit event if task is running
+        if task_id > 0 {
+            emit_task_running(task_id)
+        }
+
+        // 3. Context switch
+        kernel_core.context_switch()
+
+        // 4. Process accumulated events
+        process_event_queue()
+
+        // 5. Increment kernel tick
+        kernel_core.kernel_state.total_ticks = kernel_core.kernel_state.total_ticks + 1
+    }
+
+    // Run kernel for N ticks with synapse
+    func kernel_run_with_synapse(ticks: int) {
+        for i in range(0, ticks) {
+            kernel_tick_with_synapse()
+        }
+    }
+
+    // ========================================================================
+    // TASK CREATION WITH AUTOMATIC NEURON BINDING
+    // ========================================================================
+
+    // Create task and bind to neuron
+    func create_task_with_neuron_binding(name: string, priority: int, neuron_id: string, trigger_events: list[string]) -> int {
+        var t = kernel_core.create_task(name, priority, {})
+
+        // Emit creation event
+        emit_task_created(t.id, t.name)
+
+        // Bind to neuron
+        bind_task_to_neuron(t.id, neuron_id, trigger_events)
+
+        return t.id
+    }
+
+    // ========================================================================
+    // TASK TERMINATION WITH NEURON CLEANUP
+    // ========================================================================
+
+    func terminate_task_with_cleanup(task_id: int) {
+        // Emit termination event
+        emit_task_terminated(task_id)
+
+        // Unbind from neuron
+        unbind_task_from_neuron(task_id)
+
+        // Terminate in kernel
+        kernel_core.terminate_task(task_id)
+    }
+
+    // ========================================================================
+    // INTEGRATION STATISTICS & DEBUG
+    // ========================================================================
+
+    // Get integration statistics
+    func integration_stats() -> map {
+        var kernel_stats = kernel_core.kernel_stats()
+
+        return {
+            kernel_ticks: kernel_stats.total_ticks,
+            active_tasks: kernel_stats.active_tasks,
+            task_neuron_bindings: task_neuron_bindings.length,
+            total_neurons: synapse_neurons.length,
+            pending_events: event_queue.length,
+            total_events_emitted: event_counter - 1
+        }
+    }
+
+    // Display integration statistics
+    func print_integration_stats() {
+        var stats = integration_stats()
+        print("=== KERNEL-SYNAPSE INTEGRATION STATS ===")
+        print("Kernel Ticks:", stats.kernel_ticks)
+        print("Active Tasks:", stats.active_tasks)
+        print("Task-Neuron Bindings:", stats.task_neuron_bindings)
+        print("Total Neurons:", stats.total_neurons)
+        print("Pending Events:", stats.pending_events)
+        print("Total Events Emitted:", stats.total_events_emitted)
+    }
+
+    // List task-neuron bindings
+    func list_bindings() {
+        print("=== TASK-NEURON BINDINGS ===")
+        for task_id, binding in task_neuron_bindings {
+            print("Task", task_id, "->", binding.neuron_id,
+                  "| Events:", binding.event_count,
+                  "| Triggers:", binding.trigger_events)
+        }
+    }
+
+    // List neurons and their bound tasks
+    func list_neurons() {
+        print("=== SYNAPSE NEURONS ===")
+        for neuron_id, tasks in synapse_neurons {
+            print("Neuron:", neuron_id, "| Bound Tasks:", tasks.length)
+            for task in tasks {
+                print("  - Task", task)
+            }
+        }
+    }
+
+    // ========================================================================
+    // INTEGRATION INITIALIZATION
+    // ========================================================================
+
+    func integration_init() {
+        print("=== OS KERNEL + SYNAPSE INTEGRATION INITIALIZED ===")
+        kernel_core.kernel_init()
+        event_queue = []
+        event_counter = 1
+    }
+
+    // ========================================================================
+    // INTEGRATION RESET
+    // ========================================================================
+
+    func integration_reset() {
+        kernel_core.kernel_reset()
+        event_queue = []
+        event_counter = 1
+        task_neuron_bindings = {}
+        synapse_neurons = {}
+    }
+}
+
+// ============================================================================
+// END OF KERNEL_SYNAPSE_INTEGRATION MODULE
+// ============================================================================
