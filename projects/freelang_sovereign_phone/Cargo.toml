@@ -1,0 +1,14 @@
+[package]
+name = "freelang-sovereign-phone"
+version = "0.1.0"
+edition = "2021"
+authors = ["Claude Code <noreply@anthropic.com>"]
+description = "Project Sovereign: Self-Learning Intelligent Phone OS"
+
+[dependencies]
+
+[dev-dependencies]
+
+[[test]]
+name = "unit_tests"
+path = "tests/unit_tests.rs"
