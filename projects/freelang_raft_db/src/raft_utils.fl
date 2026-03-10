@@ -1,0 +1,217 @@
+// Raft Consensus: Utilities and Configuration
+// 공통 유틸리티 함수들과 설정
+
+fn new_raft_config() -> any {
+  return {
+    node_id: 0,
+    cluster_size: 3,
+    election_timeout_min: 150,
+    election_timeout_max: 300,
+    heartbeat_interval: 50,
+    snapshot_threshold: 1000,
+    rpc_timeout: 500,
+    max_batch_size: 100
+  }
+}
+
+fn new_timer_manager() -> any {
+  return {
+    election_timeout: 0,
+    heartbeat_timer: 0,
+    election_elapsed: 0,
+    heartbeat_elapsed: 0
+  }
+}
+
+fn tick_election_timer(timer: any) -> any {
+  timer.election_elapsed = timer.election_elapsed + 1
+  return timer
+}
+
+fn tick_heartbeat_timer(timer: any) -> any {
+  timer.heartbeat_elapsed = timer.heartbeat_elapsed + 1
+  return timer
+}
+
+fn reset_election_timer(timer: any, timeout: i32) -> any {
+  timer.election_timeout = timeout
+  timer.election_elapsed = 0
+  return timer
+}
+
+fn reset_heartbeat_timer(timer: any, interval: i32) -> any {
+  timer.heartbeat_timer = interval
+  timer.heartbeat_elapsed = 0
+  return timer
+}
+
+fn is_election_timeout(timer: any) -> bool {
+  return timer.election_elapsed >= timer.election_timeout
+}
+
+fn is_heartbeat_timeout(timer: any) -> bool {
+  return timer.heartbeat_elapsed >= timer.heartbeat_timer
+}
+
+fn election_timeout_range(config: any) -> i32 {
+  return config.election_timeout_max - config.election_timeout_min
+}
+
+fn random_election_timeout(config: any) -> i32 {
+  let range = election_timeout_range(config)
+  let random_val = range / 2
+  return config.election_timeout_min + random_val
+}
+
+fn new_message_queue() -> any {
+  return {
+    messages: [],
+    size: 0
+  }
+}
+
+fn enqueue_message(queue: any, msg: any) -> any {
+  push(queue.messages, msg)
+  queue.size = queue.size + 1
+  return queue
+}
+
+fn dequeue_message(queue: any) -> any {
+  if queue.size == 0 {
+    return null
+  }
+
+  let msg = queue.messages[0]
+  let new_messages = []
+  let i = 1
+  while i < queue.size {
+    push(new_messages, queue.messages[i])
+    i = i + 1
+  }
+  queue.messages = new_messages
+  queue.size = queue.size - 1
+
+  return msg
+}
+
+fn peek_message(queue: any) -> any {
+  if queue.size == 0 {
+    return null
+  }
+  return queue.messages[0]
+}
+
+fn clear_queue(queue: any) -> any {
+  queue.messages = []
+  queue.size = 0
+  return queue
+}
+
+fn message_to_string(msg: any) -> string {
+  if msg == null {
+    return "null"
+  }
+
+  if msg.term != null {
+    if msg.entries != null {
+      return "AppendEntries(term=" + string(msg.term) + ", entries=" + string(length(msg.entries)) + ")"
+    }
+    if msg.vote_granted != null {
+      return "RequestVoteReply(term=" + string(msg.term) + ", granted=" + string(msg.vote_granted) + ")"
+    }
+  }
+
+  return "Message"
+}
+
+fn new_metrics() -> any {
+  return {
+    term_changes: 0,
+    state_changes: 0,
+    rpc_sent: 0,
+    rpc_received: 0,
+    entries_replicated: 0,
+    entries_applied: 0,
+    elections_started: 0,
+    elections_won: 0,
+    elections_lost: 0
+  }
+}
+
+fn increment_term_changes(metrics: any) -> any {
+  metrics.term_changes = metrics.term_changes + 1
+  return metrics
+}
+
+fn increment_state_changes(metrics: any) -> any {
+  metrics.state_changes = metrics.state_changes + 1
+  return metrics
+}
+
+fn increment_rpc_sent(metrics: any) -> any {
+  metrics.rpc_sent = metrics.rpc_sent + 1
+  return metrics
+}
+
+fn increment_rpc_received(metrics: any) -> any {
+  metrics.rpc_received = metrics.rpc_received + 1
+  return metrics
+}
+
+fn increment_elections_started(metrics: any) -> any {
+  metrics.elections_started = metrics.elections_started + 1
+  return metrics
+}
+
+fn increment_elections_won(metrics: any) -> any {
+  metrics.elections_won = metrics.elections_won + 1
+  return metrics
+}
+
+fn increment_elections_lost(metrics: any) -> any {
+  metrics.elections_lost = metrics.elections_lost + 1
+  return metrics
+}
+
+fn get_metrics_summary(metrics: any) -> string {
+  let result = "Metrics: "
+  result = result + "TermChanges=" + string(metrics.term_changes)
+  result = result + ", StateChanges=" + string(metrics.state_changes)
+  result = result + ", RPCSent=" + string(metrics.rpc_sent)
+  result = result + ", RPCReceived=" + string(metrics.rpc_received)
+  result = result + ", Elections(won/lost)=" + string(metrics.elections_won) + "/" + string(metrics.elections_lost)
+  return result
+}
+
+fn new_persistent_storage() -> any {
+  return {
+    current_term: 0,
+    voted_for: -1,
+    log: null,
+    snapshot: null
+  }
+}
+
+fn save_to_storage(storage: any, raft: any, store: any) -> any {
+  storage.current_term = raft.current_term
+  storage.voted_for = raft.voted_for
+  storage.log = store
+  return storage
+}
+
+fn load_from_storage(storage: any) -> any {
+  return {
+    current_term: storage.current_term,
+    voted_for: storage.voted_for,
+    log: storage.log
+  }
+}
+
+fn config_to_string(config: any) -> string {
+  let result = "Config: "
+  result = result + "nodeId=" + string(config.node_id)
+  result = result + ", clusterSize=" + string(config.cluster_size)
+  result = result + ", electionTimeout=" + string(config.election_timeout_min) + "-" + string(config.election_timeout_max)
+  result = result + ", heartbeatInterval=" + string(config.heartbeat_interval)
+  return result
+}

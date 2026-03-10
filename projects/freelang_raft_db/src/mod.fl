@@ -1,0 +1,116 @@
+// Raft Consensus DB - Module Integration
+// Public API exports for Raft Consensus system
+
+// ============= State Machine Module =============
+// Raft node state management (Follower, Candidate, Leader)
+pub fn new_raft_state()
+pub fn get_state(raft)
+pub fn is_follower(raft)
+pub fn is_candidate(raft)
+pub fn is_leader(raft)
+pub fn become_follower(raft, term, leader_id)
+pub fn become_candidate(raft)
+pub fn become_leader(raft)
+pub fn update_term(raft, new_term)
+pub fn vote_for(raft, candidate_id)
+pub fn get_current_term(raft)
+pub fn set_commit_index(raft, index)
+pub fn set_last_applied(raft, index)
+pub fn state_to_string(raft)
+
+// ============= Log Entry & Storage Module =============
+// Log entry management and storage operations
+pub fn new_log_entry(term, index, command)
+pub fn new_log_store()
+pub fn append_entry(store, entry)
+pub fn get_entry(store, index)
+pub fn get_last_index(store)
+pub fn get_last_term(store)
+pub fn get_log_size(store)
+pub fn delete_entries_from(store, index)
+pub fn append_entries(store, entries)
+pub fn get_entries_range(store, start, end)
+pub fn validate_prev_log(store, prev_log_index, prev_log_term)
+pub fn check_log_consistency(store)
+pub fn batch_append_entries(store, prev_log_index, prev_log_term, entries)
+
+// ============= Leader Election Module =============
+// Election protocol and vote management
+pub fn new_request_vote(term, candidate_id, last_log_index, last_log_term)
+pub fn new_request_vote_reply(term, vote_granted)
+pub fn new_election_state()
+pub fn is_election_won(election, cluster_size)
+pub fn should_grant_vote(raft, req)
+pub fn handle_request_vote(raft, req)
+pub fn election_timeout_value()
+pub fn random_election_timeout(config)
+pub fn start_election(raft)
+pub fn verify_leader_election(raft, majority_size)
+
+// ============= Log Replication Module =============
+// Replication protocol and consistency
+pub fn new_append_entries(term, leader_id, prev_log_index, prev_log_term, commit_index)
+pub fn new_append_entries_reply(term, success)
+pub fn new_replication_state()
+pub fn init_replication_for_followers(repl, num_followers, last_log_index)
+pub fn get_next_index(repl, follower)
+pub fn set_next_index(repl, follower, index)
+pub fn get_match_index(repl, follower)
+pub fn set_match_index(repl, follower, index)
+pub fn handle_append_entries(raft, store, req)
+pub fn apply_committed_entries(raft, store)
+pub fn create_append_entries_msg(raft, store, repl, follower)
+pub fn calculate_new_commit_index(repl, current_commit, last_log_index)
+pub fn validate_replication_invariants(raft, repl)
+
+// ============= Snapshot Manager Module =============
+// Snapshot protocol and persistence
+pub fn new_snapshot(last_included_index, last_included_term, data)
+pub fn new_install_snapshot_req(term, leader_id, last_included_index, last_included_term, offset, data, done)
+pub fn handle_install_snapshot(raft, req, snap_state)
+pub fn create_snapshot(store, last_applied, data)
+pub fn should_snapshot(store, snapshot_threshold)
+pub fn split_snapshot_for_transfer(snapshot, chunk_size)
+pub fn validate_snapshot(snapshot)
+
+// ============= Utilities Module =============
+// Configuration, timers, metrics
+pub fn new_raft_config()
+pub fn new_timer_manager()
+pub fn tick_election_timer(timer)
+pub fn reset_election_timer(timer, timeout)
+pub fn is_election_timeout(timer)
+pub fn is_heartbeat_timeout(timer)
+pub fn random_election_timeout(config)
+pub fn new_message_queue()
+pub fn enqueue_message(queue, msg)
+pub fn dequeue_message(queue)
+pub fn new_metrics()
+pub fn get_metrics_summary(metrics)
+pub fn config_to_string(config)
+
+// ============= Integration Layer =============
+// Main RaftNode structure and operations
+pub fn new_raft_node(node_id, cluster_size)
+pub fn initialize_node(node)
+pub fn process_tick(node)
+pub fn handle_request_vote_msg(node, req)
+pub fn handle_append_entries_msg(node, req)
+pub fn create_heartbeat_messages(node)
+pub fn create_vote_request_messages(node)
+pub fn apply_committed_entries_to_state(node)
+pub fn append_entry_to_log(node, command)
+pub fn get_node_status(node)
+pub fn get_node_full_status(node)
+pub fn is_node_leader(node)
+pub fn is_node_follower(node)
+pub fn is_node_candidate(node)
+pub fn reset_node(node)
+pub fn export_node_state(node)
+pub fn validate_node_invariants(node)
+
+// ============= Version Info =============
+// This is Raft Consensus Group A implementation
+// Phase: Group A (Basic Consensus Engine)
+// Language: FreeLang v2.2.0
+// Status: READY

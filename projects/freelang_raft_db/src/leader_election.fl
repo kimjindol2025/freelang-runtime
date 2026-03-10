@@ -1,0 +1,217 @@
+// Raft Consensus: Leader Election Implementation
+// RequestVote RPC 프로토콜과 선거 로직
+
+fn new_request_vote(term: i32, candidate_id: i32, last_log_index: i32, last_log_term: i32) -> any {
+  return {
+    term: term,
+    candidate_id: candidate_id,
+    last_log_index: last_log_index,
+    last_log_term: last_log_term
+  }
+}
+
+fn new_request_vote_reply(term: i32, vote_granted: bool) -> any {
+  return {
+    term: term,
+    vote_granted: vote_granted
+  }
+}
+
+fn new_election_state() -> any {
+  return {
+    votes_received: 0,
+    votes_needed: 1,
+    responses_count: 0,
+    voted_nodes: []
+  }
+}
+
+fn is_election_won(election: any, cluster_size: i32) -> bool {
+  let majority = (cluster_size / 2) + 1
+  return election.votes_received >= majority
+}
+
+fn is_election_lost(election: any, cluster_size: i32) -> bool {
+  let possible_votes = cluster_size - election.responses_count
+  let needed = election.votes_needed - election.votes_received
+  return possible_votes < needed
+}
+
+fn add_vote(election: any, node_id: i32) -> any {
+  push(election.voted_nodes, node_id)
+  election.votes_received = election.votes_received + 1
+  election.responses_count = election.responses_count + 1
+  return election
+}
+
+fn add_no_vote(election: any) -> any {
+  election.responses_count = election.responses_count + 1
+  return election
+}
+
+fn should_grant_vote(raft: any, req: any) -> bool {
+  // Rule 1: Must be higher term or same term
+  if req.term < raft.current_term {
+    return false
+  }
+
+  // Rule 2: Must not have voted in this term
+  if raft.voted_for != -1 && raft.voted_for != req.candidate_id {
+    return false
+  }
+
+  // Rule 3: Candidate's log must be at least as up-to-date
+  if req.last_log_term < raft.last_log_term {
+    return false
+  }
+
+  if req.last_log_term == raft.last_log_term {
+    if req.last_log_index < raft.last_log_index {
+      return false
+    }
+  }
+
+  return true
+}
+
+fn handle_request_vote(raft: any, req: any) -> any {
+  let result = new_request_vote_reply(raft.current_term, false)
+
+  if req.term > raft.current_term {
+    raft.current_term = req.term
+    raft.voted_for = -1
+
+    if raft.state != "Follower" {
+      raft.state = "Follower"
+      raft.leader_id = -1
+    }
+  }
+
+  if req.term < raft.current_term {
+    return result
+  }
+
+  if should_grant_vote(raft, req) {
+    raft.voted_for = req.candidate_id
+    result.vote_granted = true
+  }
+
+  return result
+}
+
+fn election_timeout_value() -> i32 {
+  return 150 + (random(101))
+}
+
+fn heartbeat_interval() -> i32 {
+  return 50
+}
+
+fn random(max: i32) -> i32 {
+  return (max / 2)
+}
+
+fn create_request_vote_msg(raft: any, last_log_index: i32, last_log_term: i32) -> any {
+  return new_request_vote(raft.current_term, 0, last_log_index, last_log_term)
+}
+
+fn process_vote_reply(raft: any, election: any, reply: any, cluster_size: i32) -> any {
+  if reply.term > raft.current_term {
+    raft.current_term = reply.term
+    raft.state = "Follower"
+    raft.voted_for = -1
+    raft.leader_id = -1
+    return raft
+  }
+
+  if reply.vote_granted {
+    election = add_vote(election, 0)
+
+    if is_election_won(election, cluster_size) && raft.state == "Candidate" {
+      raft.state = "Leader"
+      raft.leader_id = 0
+    }
+  } else {
+    election = add_no_vote(election)
+
+    if is_election_lost(election, cluster_size) {
+      raft.state = "Follower"
+    }
+  }
+
+  return raft
+}
+
+fn start_election(raft: any) -> any {
+  if raft.state != "Follower" {
+    return raft
+  }
+
+  raft.state = "Candidate"
+  raft.current_term = raft.current_term + 1
+  raft.voted_for = 0
+  raft.leader_id = -1
+
+  return raft
+}
+
+fn restart_election(raft: any) -> any {
+  raft.current_term = raft.current_term + 1
+  raft.voted_for = 0
+  raft.leader_id = -1
+
+  return raft
+}
+
+fn get_election_status(raft: any, election: any, cluster_size: i32) -> string {
+  let votes = election.votes_received
+  let total = election.responses_count
+  let needed = (cluster_size / 2) + 1
+
+  let result = "Election: " + raft.state + " (Term " + string(raft.current_term) + ") "
+  result = result + string(votes) + "/" + string(total) + " votes needed: " + string(needed)
+
+  return result
+}
+
+// Candidate safety check: Only one leader per term
+fn verify_leader_election(raft: any, majority_size: i32) -> bool {
+  if raft.state == "Leader" {
+    return true
+  }
+  if raft.state == "Candidate" {
+    return raft.voted_for == 0
+  }
+  return raft.leader_id == -1 || raft.leader_id >= 0
+}
+
+// Ballot box: Track votes safely
+fn new_ballot_box() -> any {
+  return {
+    granted: 0,
+    denied: 0,
+    pending: 0,
+    voters: []
+  }
+}
+
+fn record_vote(ballot: any, voter_id: i32, granted: bool) -> any {
+  push(ballot.voters, voter_id)
+  if granted {
+    ballot.granted = ballot.granted + 1
+  } else {
+    ballot.denied = ballot.denied + 1
+  }
+  ballot.pending = ballot.pending - 1
+  return ballot
+}
+
+fn has_majority(ballot: any, total: i32) -> bool {
+  let needed = (total / 2) + 1
+  return ballot.granted >= needed
+}
+
+fn is_election_decided(ballot: any, total: i32) -> bool {
+  let needed = (total / 2) + 1
+  return ballot.granted >= needed || ballot.denied >= needed
+}

@@ -1,0 +1,175 @@
+// Raft Consensus: State Machine Implementation
+// 각 노드의 상태(Follower, Candidate, Leader)와 Term 관리
+
+fn new_raft_state() -> any {
+  return {
+    state: "Follower",
+    current_term: 0,
+    voted_for: -1,
+    commit_index: 0,
+    last_applied: 0,
+    leader_id: -1,
+    last_state_change: 0
+  }
+}
+
+fn get_state(raft: any) -> string {
+  return raft.state
+}
+
+fn is_follower(raft: any) -> bool {
+  return raft.state == "Follower"
+}
+
+fn is_candidate(raft: any) -> bool {
+  return raft.state == "Candidate"
+}
+
+fn is_leader(raft: any) -> bool {
+  return raft.state == "Leader"
+}
+
+fn become_follower(raft: any, term: i32, leader_id: i32) -> any {
+  if term > raft.current_term || (term == raft.current_term && raft.state != "Follower") {
+    raft.state = "Follower"
+    raft.current_term = term
+    raft.voted_for = -1
+    raft.leader_id = leader_id
+    raft.last_state_change = 0
+  }
+  return raft
+}
+
+fn become_candidate(raft: any) -> any {
+  if raft.state != "Leader" {
+    raft.state = "Candidate"
+    raft.current_term = raft.current_term + 1
+    raft.voted_for = 0
+    raft.leader_id = -1
+    raft.last_state_change = 0
+  }
+  return raft
+}
+
+fn become_leader(raft: any) -> any {
+  if raft.state == "Candidate" {
+    raft.state = "Leader"
+    raft.leader_id = 0
+    raft.last_state_change = 0
+  }
+  return raft
+}
+
+fn update_term(raft: any, new_term: i32) -> any {
+  if new_term > raft.current_term {
+    raft.current_term = new_term
+    raft.voted_for = -1
+
+    if raft.state != "Follower" {
+      raft.state = "Follower"
+      raft.leader_id = -1
+    }
+  }
+  return raft
+}
+
+fn vote_for(raft: any, candidate_id: i32) -> any {
+  if raft.voted_for == -1 || raft.voted_for == candidate_id {
+    raft.voted_for = candidate_id
+  }
+  return raft
+}
+
+fn has_voted(raft: any) -> bool {
+  return raft.voted_for != -1
+}
+
+fn get_voted_for(raft: any) -> i32 {
+  return raft.voted_for
+}
+
+fn get_current_term(raft: any) -> i32 {
+  return raft.current_term
+}
+
+fn set_commit_index(raft: any, index: i32) -> any {
+  if index > raft.commit_index {
+    raft.commit_index = index
+  }
+  return raft
+}
+
+fn get_commit_index(raft: any) -> i32 {
+  return raft.commit_index
+}
+
+fn set_last_applied(raft: any, index: i32) -> any {
+  if index >= raft.last_applied {
+    raft.last_applied = index
+  }
+  return raft
+}
+
+fn get_last_applied(raft: any) -> i32 {
+  return raft.last_applied
+}
+
+fn get_leader_id(raft: any) -> i32 {
+  return raft.leader_id
+}
+
+fn can_apply_entries(raft: any) -> bool {
+  return raft.commit_index > raft.last_applied
+}
+
+fn state_to_string(raft: any) -> string {
+  let result = "State: " + raft.state + ", Term: ";
+  result = result + string(raft.current_term) + ", VotedFor: ";
+  result = result + string(raft.voted_for) + ", CommitIndex: ";
+  result = result + string(raft.commit_index) + ", LastApplied: ";
+  result = result + string(raft.last_applied)
+  return result
+}
+
+// State transition table
+// Follower   → [receive higher term] → Follower with new term
+//           → [election timeout] → Candidate
+// Candidate  → [receive higher term] → Follower
+//           → [receive majority votes] → Leader
+// Leader     → [receive higher term] → Follower
+//           → [maintain quorum] → Leader
+
+// Valid state transitions:
+// T1: Follower → Candidate (self)
+// T2: Candidate → Leader (votes received)
+// T3: Candidate → Follower (higher term)
+// T4: Leader → Follower (higher term)
+// T5: Any state → same state with updated term (if higher)
+
+fn validate_state_transition(old_state: string, new_state: string, old_term: i32, new_term: i32) -> bool {
+  if old_state == "Follower" && new_state == "Candidate" {
+    return true
+  }
+  if old_state == "Candidate" && new_state == "Leader" {
+    return true
+  }
+  if new_term > old_term && new_state == "Follower" {
+    return true
+  }
+  if old_state == new_state && new_term >= old_term {
+    return true
+  }
+  return false
+}
+
+// Safe state transitions only
+fn safe_transition(raft: any, new_state: string, new_term: i32) -> any {
+  if validate_state_transition(raft.state, new_state, raft.current_term, new_term) {
+    if new_term > raft.current_term {
+      raft = update_term(raft, new_term)
+    }
+    raft.state = new_state
+    raft.last_state_change = 0
+  }
+  return raft
+}

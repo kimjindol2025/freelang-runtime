@@ -1,0 +1,202 @@
+// Raft Consensus: Snapshot Management
+// InstallSnapshot RPC 프로토콜과 스냅샷 관리
+
+fn new_snapshot(last_included_index: i32, last_included_term: i32, data: string) -> any {
+  return {
+    last_included_index: last_included_index,
+    last_included_term: last_included_term,
+    data: data,
+    size: length(data)
+  }
+}
+
+fn new_install_snapshot_req(term: i32, leader_id: i32, last_included_index: i32, last_included_term: i32, offset: i32, data: string, done: bool) -> any {
+  return {
+    term: term,
+    leader_id: leader_id,
+    last_included_index: last_included_index,
+    last_included_term: last_included_term,
+    offset: offset,
+    data: data,
+    done: done
+  }
+}
+
+fn new_install_snapshot_reply(term: i32) -> any {
+  return {
+    term: term
+  }
+}
+
+fn new_snapshot_state() -> any {
+  return {
+    receiving: false,
+    offset: 0,
+    data: "",
+    last_included_index: 0,
+    last_included_term: 0
+  }
+}
+
+fn handle_install_snapshot(raft: any, req: any, snap_state: any) -> any {
+  let reply = new_install_snapshot_reply(raft.current_term)
+
+  if req.term < raft.current_term {
+    return reply
+  }
+
+  if req.term > raft.current_term {
+    raft.current_term = req.term
+    raft.voted_for = -1
+    raft.state = "Follower"
+    raft.leader_id = req.leader_id
+  }
+
+  // Process snapshot chunk
+  if req.offset == 0 {
+    snap_state.receiving = true
+    snap_state.data = ""
+    snap_state.offset = 0
+    snap_state.last_included_index = req.last_included_index
+    snap_state.last_included_term = req.last_included_term
+  }
+
+  if snap_state.receiving && req.offset == snap_state.offset {
+    snap_state.data = snap_state.data + req.data
+    snap_state.offset = snap_state.offset + length(req.data)
+  }
+
+  if req.done && snap_state.receiving {
+    snap_state.receiving = false
+
+    // Apply snapshot
+    raft.commit_index = req.last_included_index
+    raft.last_applied = req.last_included_index
+  }
+
+  reply.term = raft.current_term
+  return reply
+}
+
+fn create_snapshot(store: any, last_applied: i32, data: string) -> any {
+  let last_entry = get_entry(store, last_applied)
+  let last_term = 0
+
+  if last_entry != null {
+    last_term = last_entry.term
+  }
+
+  return new_snapshot(last_applied, last_term, data)
+}
+
+fn should_snapshot(store: any, snapshot_threshold: i32) -> bool {
+  return get_log_size(store) > snapshot_threshold
+}
+
+fn save_snapshot(snapshot: any, path: string) -> any {
+  // Save to persistent storage
+  return snapshot
+}
+
+fn load_snapshot(path: string) -> any {
+  // Load from persistent storage
+  return null
+}
+
+fn get_snapshot_size(snapshot: any) -> i32 {
+  return snapshot.size
+}
+
+fn split_snapshot_for_transfer(snapshot: any, chunk_size: i32) -> any {
+  let chunks = []
+  let offset = 0
+
+  while offset < length(snapshot.data) {
+    let end = offset + chunk_size
+    if end > length(snapshot.data) {
+      end = length(snapshot.data)
+    }
+
+    let chunk_data = substring(snapshot.data, offset, end - offset)
+    let is_done = end >= length(snapshot.data)
+
+    let chunk = new_install_snapshot_req(
+      0,
+      0,
+      snapshot.last_included_index,
+      snapshot.last_included_term,
+      offset,
+      chunk_data,
+      is_done
+    )
+
+    push(chunks, chunk)
+    offset = end
+  }
+
+  return chunks
+}
+
+fn substring(str: string, start: i32, len: i32) -> string {
+  if start < 0 || len < 0 {
+    return ""
+  }
+  if start >= length(str) {
+    return ""
+  }
+
+  let end = start + len
+  if end > length(str) {
+    end = length(str)
+  }
+
+  let result = ""
+  let i = start
+  while i < end {
+    result = result + str[i - start]
+    i = i + 1
+  }
+
+  return result
+}
+
+fn validate_snapshot(snapshot: any) -> bool {
+  if snapshot.last_included_index < 0 {
+    return false
+  }
+  if snapshot.last_included_term < 0 {
+    return false
+  }
+  if length(snapshot.data) <= 0 {
+    return false
+  }
+  return true
+}
+
+fn merge_snapshot_with_log(raft: any, store: any, snapshot: any) -> any {
+  // Discard log up to snapshot.last_included_index
+  store = delete_entries_from(store, snapshot.last_included_index + 1)
+
+  raft.commit_index = snapshot.last_included_index
+  raft.last_applied = snapshot.last_included_index
+
+  return raft
+}
+
+fn get_log_offset(snapshot: any) -> i32 {
+  return snapshot.last_included_index + 1
+}
+
+fn get_snapshot_metadata(snapshot: any) -> string {
+  let result = "Snapshot: LastIncludedIndex=" + string(snapshot.last_included_index)
+  result = result + ", LastIncludedTerm=" + string(snapshot.last_included_term)
+  result = result + ", Size=" + string(snapshot.size)
+  return result
+}
+
+fn can_discard_log_entries(store: any, snapshot: any) -> bool {
+  let entries_to_discard = snapshot.last_included_index
+  let current_size = get_log_size(store)
+
+  return entries_to_discard < current_size
+}

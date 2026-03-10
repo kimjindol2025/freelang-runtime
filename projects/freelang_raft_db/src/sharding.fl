@@ -1,0 +1,492 @@
+// ============================================================================
+// Consistent Hashing & Sharding
+// Week 2: Horizontal Scaling - 500 lines
+// ============================================================================
+
+// ----- Structures -----
+
+struct HashNode {
+    hash: u64,
+    node_id: u32,
+    is_virtual: bool,
+}
+
+struct ConsistentHashRing {
+    virtual_nodes: u32,
+    nodes: array,              // Sorted array of HashNode
+    node_list: array,          // Actual node IDs
+    hash_map: map,             // hash -> node_id
+}
+
+struct Shard {
+    id: u32,
+    key_range_start: string,
+    key_range_end: string,
+    primary_node: u32,
+    replica_nodes: array,
+    size_bytes: u64,
+    created_at: u64,
+}
+
+struct ShardedKVStore {
+    shards: array,
+    ring: ConsistentHashRing,
+    data: map,                 // key -> value
+    node_count: u32,
+    replication_factor: u32,
+}
+
+// ----- Hash Function -----
+
+fn hash_key(key: string) -> u64 {
+    // Simple hash: sum of character codes
+    let hash: u64 = 5381;
+    let i = 0;
+    while (i < key.len()) {
+        let c = key[i] as u64;
+        hash = ((hash << 5) + hash) + c;
+        i = i + 1;
+    };
+
+    hash
+}
+
+fn hash_node(node_id: u32, virtual_idx: u32) -> u64 {
+    let combined = node_id * 1000 + virtual_idx;
+    hash_key("node:" + combined)
+}
+
+// ----- ConsistentHashRing -----
+
+fn new_consistent_hash_ring(virtual_nodes: u32) -> ConsistentHashRing {
+    ConsistentHashRing {
+        virtual_nodes: virtual_nodes,
+        nodes: [],
+        node_list: [],
+        hash_map: {},
+    }
+}
+
+fn add_node_to_ring(ring: ConsistentHashRing, node_id: u32) -> ConsistentHashRing {
+    // Add virtual nodes
+    let i = 0;
+    while (i < ring.virtual_nodes) {
+        let hash = hash_node(node_id, i);
+
+        let hash_node_struct = HashNode {
+            hash: hash,
+            node_id: node_id,
+            is_virtual: true,
+        };
+
+        ring.nodes.push(hash_node_struct);
+        ring.hash_map[hash] = node_id;
+
+        i = i + 1;
+    };
+
+    // Add to node list (if not already there)
+    let found = false;
+    let j = 0;
+    while (j < ring.node_list.len()) {
+        if (ring.node_list[j] == node_id) {
+            found = true;
+            break;
+        };
+        j = j + 1;
+    };
+
+    if (!found) {
+        ring.node_list.push(node_id);
+    };
+
+    // Sort nodes by hash
+    sort_hash_nodes(ring.nodes);
+
+    ring
+}
+
+fn remove_node_from_ring(ring: ConsistentHashRing, node_id: u32) -> ConsistentHashRing {
+    // Remove all virtual nodes of this node
+    let new_nodes = [];
+    let i = 0;
+    while (i < ring.nodes.len()) {
+        if (ring.nodes[i].node_id != node_id) {
+            new_nodes.push(ring.nodes[i]);
+        };
+        i = i + 1;
+    };
+
+    ring.nodes = new_nodes;
+
+    // Remove from node list
+    let new_node_list = [];
+    let j = 0;
+    while (j < ring.node_list.len()) {
+        if (ring.node_list[j] != node_id) {
+            new_node_list.push(ring.node_list[j]);
+        };
+        j = j + 1;
+    };
+
+    ring.node_list = new_node_list;
+
+    // Rebuild hash map
+    let new_hash_map = {};
+    let k = 0;
+    while (k < ring.nodes.len()) {
+        new_hash_map[ring.nodes[k].hash] = ring.nodes[k].node_id;
+        k = k + 1;
+    };
+
+    ring.hash_map = new_hash_map;
+
+    ring
+}
+
+// Simple bubble sort for hash nodes
+fn sort_hash_nodes(nodes: array) {
+    let i = 0;
+    while (i < nodes.len()) {
+        let j = i + 1;
+        while (j < nodes.len()) {
+            if (nodes[j].hash < nodes[i].hash) {
+                let temp = nodes[i];
+                nodes[i] = nodes[j];
+                nodes[j] = temp;
+            };
+            j = j + 1;
+        };
+        i = i + 1;
+    };
+}
+
+// ----- Ring Lookup -----
+
+fn get_node_for_key(ring: ConsistentHashRing, key: string) -> u32 {
+    if (ring.node_list.len() == 0) {
+        return 0;
+    };
+
+    let key_hash = hash_key(key);
+
+    // Find first node >= key_hash
+    let i = 0;
+    while (i < ring.nodes.len()) {
+        if (ring.nodes[i].hash >= key_hash) {
+            return ring.nodes[i].node_id;
+        };
+        i = i + 1;
+    };
+
+    // Wrap around to first node
+    ring.nodes[0].node_id
+}
+
+fn get_replica_nodes(ring: ConsistentHashRing, key: string, factor: u32) -> array {
+    let replicas = [];
+    let key_hash = hash_key(key);
+    let seen = {};
+
+    let i = 0;
+    let count = 0;
+    while (i < ring.nodes.len() && count < factor) {
+        let node_id = ring.nodes[i].node_id;
+
+        // Add if not seen before
+        if (!seen[node_id]) {
+            replicas.push(node_id);
+            seen[node_id] = true;
+            count = count + 1;
+        };
+
+        i = i + 1;
+    };
+
+    // Wrap around
+    let j = 0;
+    while (j < ring.nodes.len() && count < factor) {
+        let node_id = ring.nodes[j].node_id;
+
+        if (!seen[node_id]) {
+            replicas.push(node_id);
+            seen[node_id] = true;
+            count = count + 1;
+        };
+
+        j = j + 1;
+    };
+
+    replicas
+}
+
+// ----- Shard Management -----
+
+fn new_sharded_kv_store(replication_factor: u32) -> ShardedKVStore {
+    ShardedKVStore {
+        shards: [],
+        ring: new_consistent_hash_ring(150),
+        data: {},
+        node_count: 0,
+        replication_factor: replication_factor,
+    }
+}
+
+fn add_node_to_store(store: ShardedKVStore, node_id: u32) -> ShardedKVStore {
+    store.ring = add_node_to_ring(store.ring, node_id);
+    store.node_count = store.node_count + 1;
+
+    print("Node " + node_id + " added to ring");
+
+    store
+}
+
+fn remove_node_from_store(store: ShardedKVStore, node_id: u32) -> ShardedKVStore {
+    store.ring = remove_node_from_ring(store.ring, node_id);
+    store.node_count = store.node_count - 1;
+
+    print("Node " + node_id + " removed from ring");
+
+    store
+}
+
+// ----- KV Operations -----
+
+fn put(store: ShardedKVStore, key: string, value: string) -> ShardedKVStore {
+    let primary = get_node_for_key(store.ring, key);
+    let replicas = get_replica_nodes(store.ring, key, store.replication_factor);
+
+    // Store in data map
+    store.data[key] = value;
+
+    print("Put " + key + " -> primary=" + primary + ", replicas=" + replicas.len());
+
+    store
+}
+
+fn get(store: ShardedKVStore, key: string) -> string {
+    let value = store.data[key];
+
+    if (value.len() > 0) {
+        return value;
+    };
+
+    ""
+}
+
+fn delete(store: ShardedKVStore, key: string) -> ShardedKVStore {
+    store.data.remove(key);
+
+    print("Deleted " + key);
+
+    store
+}
+
+// ----- Balancing Statistics -----
+
+struct BalanceStats {
+    node_id: u32,
+    key_count: u32,
+    total_size: u64,
+}
+
+fn get_balance_stats(store: ShardedKVStore) -> array {
+    let stats = [];
+
+    // Count keys per node
+    let node_counts = {};
+
+    // For each key, find its primary node
+    for key in store.data {
+        let primary = get_node_for_key(store.ring, key);
+
+        if (!node_counts[primary]) {
+            node_counts[primary] = 0;
+        };
+
+        node_counts[primary] = node_counts[primary] + 1;
+    };
+
+    // Convert to array
+    for node_id in store.ring.node_list {
+        let count = node_counts[node_id] || 0;
+
+        let stat = BalanceStats {
+            node_id: node_id,
+            key_count: count,
+            total_size: count * 100,  // Assume 100 bytes per key
+        };
+
+        stats.push(stat);
+    };
+
+    stats
+}
+
+fn check_balance(store: ShardedKVStore) -> bool {
+    let stats = get_balance_stats(store);
+
+    if (stats.len() < 2) {
+        return true;
+    };
+
+    // Check if keys are roughly balanced
+    let total_keys = 0;
+    let i = 0;
+    while (i < stats.len()) {
+        total_keys = total_keys + stats[i].key_count;
+        i = i + 1;
+    };
+
+    let avg_keys = total_keys / stats.len();
+    let threshold = avg_keys / 2;  // Allow ±50%
+
+    // Check each node
+    let balanced = true;
+    let j = 0;
+    while (j < stats.len()) {
+        let deviation = abs(stats[j].key_count as i64 - avg_keys as i64);
+        if (deviation > threshold as i64) {
+            balanced = false;
+            break;
+        };
+        j = j + 1;
+    };
+
+    balanced
+}
+
+fn abs(x: i64) -> i64 {
+    if (x < 0) -x else x
+}
+
+// ----- Hotspot Detection -----
+
+fn detect_hotspots(store: ShardedKVStore) -> array {
+    let stats = get_balance_stats(store);
+    let hotspots = [];
+
+    // Calculate average and std dev
+    let total = 0;
+    let i = 0;
+    while (i < stats.len()) {
+        total = total + stats[i].key_count;
+        i = i + 1;
+    };
+
+    let avg = total / stats.len();
+    let sum_sq_diff = 0;
+    let j = 0;
+    while (j < stats.len()) {
+        let diff = stats[j].key_count as i64 - avg as i64;
+        sum_sq_diff = sum_sq_diff + (diff * diff) as u64;
+        j = j + 1;
+    };
+
+    let variance = sum_sq_diff / stats.len();
+    let std_dev = sqrt(variance);
+
+    // Find hotspots (>2 std dev from mean)
+    let k = 0;
+    while (k < stats.len()) {
+        if (stats[k].key_count > avg + 2 * std_dev) {
+            hotspots.push(stats[k].node_id);
+        };
+        k = k + 1;
+    };
+
+    hotspots
+}
+
+fn sqrt(x: u64) -> u64 {
+    // Simple sqrt approximation
+    if (x == 0) return 0;
+
+    let result = x;
+    let i = 0;
+    while (i < 10) {
+        result = (result + x / result) / 2;
+        i = i + 1;
+    };
+
+    result
+}
+
+// ----- Rebalancing -----
+
+fn rebalance(store: ShardedKVStore) -> ShardedKVStore {
+    // Recalculate key distribution
+    let moved_keys = 0;
+
+    // This is a placeholder for actual rebalancing
+    // In practice, would migrate keys between nodes
+
+    print("Rebalancing: moved " + moved_keys + " keys");
+
+    store
+}
+
+// ----- Statistics Printing -----
+
+fn print_ring_state(store: ShardedKVStore) {
+    print("=== Ring State ===");
+    print("Nodes: " + store.ring.node_list.len());
+    print("Virtual Nodes per Physical: " + store.ring.virtual_nodes);
+    print("Total Keys: " + store.data.len());
+    print("Replication Factor: " + store.replication_factor);
+
+    let stats = get_balance_stats(store);
+    print("");
+    print("=== Distribution ===");
+
+    let i = 0;
+    while (i < stats.len()) {
+        print("Node " + stats[i].node_id + ": " + stats[i].key_count + " keys");
+        i = i + 1;
+    };
+
+    print("");
+}
+
+fn print_key_location(store: ShardedKVStore, key: string) {
+    let primary = get_node_for_key(store.ring, key);
+    let replicas = get_replica_nodes(store.ring, key, store.replication_factor);
+
+    print("Key '" + key + "':");
+    print("  Primary: " + primary);
+    print("  Replicas: " + replicas.len() + " nodes");
+
+    let i = 0;
+    while (i < replicas.len()) {
+        print("    - Node " + replicas[i]);
+        i = i + 1;
+    };
+}
+
+// ----- Utilities -----
+
+fn print_balance_report(store: ShardedKVStore) {
+    let stats = get_balance_stats(store);
+    let total_keys = 0;
+
+    let i = 0;
+    while (i < stats.len()) {
+        total_keys = total_keys + stats[i].key_count;
+        i = i + 1;
+    };
+
+    let balanced = check_balance(store);
+    let balance_status = if (balanced) "✓ Balanced" else "✗ Unbalanced";
+
+    print("=== Balance Report ===");
+    print("Total Keys: " + total_keys);
+    print("Status: " + balance_status);
+
+    // Detect hotspots
+    let hotspots = detect_hotspots(store);
+    if (hotspots.len() > 0) {
+        print("Hotspots detected: " + hotspots.len() + " nodes");
+    } else {
+        print("No hotspots detected");
+    };
+}

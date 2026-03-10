@@ -1,0 +1,205 @@
+// Raft Consensus DB - Group A Unforgiving Rules Verification
+// 5가지 무관용 규칙 검증
+
+// ============= RULE 1: State Safety =============
+// 같은 index에서 다른 Term을 가진 log가 없어야 함
+
+fn verify_rule_1_state_safety() -> string {
+  let store = new_log_store()
+
+  store = append_entry(store, new_log_entry(1, 1, "cmd1"))
+  store = append_entry(store, new_log_entry(1, 2, "cmd2"))
+  store = append_entry(store, new_log_entry(2, 3, "cmd3"))
+
+  let i = 0
+  while i < get_log_size(store) {
+    let entry1 = get_entry(store, i + 1)
+    let j = i + 1
+    while j < get_log_size(store) {
+      let entry2 = get_entry(store, j + 1)
+
+      if entry1.index == entry2.index && entry1.term != entry2.term {
+        return "FAIL: R1 - Same index with different terms"
+      }
+
+      j = j + 1
+    }
+    i = i + 1
+  }
+
+  return "PASS: R1 - State Safety (같은 index = 같은 term)"
+}
+
+// ============= RULE 2: Leader Completeness =============
+// Leader는 모든 이전 committed entries를 포함
+
+fn verify_rule_2_leader_completeness() -> string {
+  let node = new_raft_node(0, 3)
+  node = initialize_node(node)
+
+  node.store = append_entry(node.store, new_log_entry(1, 1, "cmd1"))
+  node.store = append_entry(node.store, new_log_entry(1, 2, "cmd2"))
+  node.raft.commit_index = 2
+  node.raft.last_applied = 2
+
+  node.raft = become_candidate(node.raft)
+  node.raft = become_leader(node.raft)
+
+  if node.raft.current_term < 2 {
+    return "FAIL: R2 - Leader term should be higher"
+  }
+
+  let last_committed = node.raft.commit_index
+  let leader_last_index = get_last_index(node.store)
+
+  if last_committed > leader_last_index {
+    return "FAIL: R2 - Leader doesn't have all committed entries"
+  }
+
+  return "PASS: R2 - Leader Completeness (leader 모든 committed 포함)"
+}
+
+// ============= RULE 3: Election Liveness =============
+// Follower timeout 없이 Leader 선출 불가
+
+fn verify_rule_3_election_liveness() -> string {
+  let config = new_raft_config()
+  let timer = new_timer_manager()
+
+  let timeout = random_election_timeout(config)
+  timer = reset_election_timer(timer, timeout)
+
+  if timeout < config.election_timeout_min {
+    return "FAIL: R3 - Timeout below minimum"
+  }
+  if timeout > config.election_timeout_max {
+    return "FAIL: R3 - Timeout above maximum"
+  }
+
+  if timeout < 100 || timeout > 300 {
+    return "FAIL: R3 - Election timeout not in range [100, 300]"
+  }
+
+  return "PASS: R3 - Election Liveness (timeout 범위 100-300ms)"
+}
+
+// ============= RULE 4: Replication Safety =============
+// Replication 실패 시 entry는 committed되지 않음
+
+fn verify_rule_4_replication_safety() -> string {
+  let raft = new_raft_state()
+  raft.state = "Leader"
+  raft.current_term = 1
+  raft.commit_index = 0
+
+  let repl = new_replication_state()
+  repl = init_replication_for_followers(repl, 3, 5)
+
+  let initial_match = get_match_index(repl, 1)
+
+  repl = set_match_index(repl, 0, 3)
+  repl = set_match_index(repl, 1, 3)
+
+  let new_commit = calculate_new_commit_index(repl, 2, 5)
+
+  if new_commit > 3 && get_match_index(repl, 2) < new_commit {
+    return "FAIL: R4 - Entry committed without majority replication"
+  }
+
+  return "PASS: R4 - Replication Safety (majority 복제 후 commit)"
+}
+
+// ============= RULE 5: Consistency (No Divergence) =============
+// 같은 index의 모든 logs는 같은 term을 가짐
+
+fn verify_rule_5_consistency_no_divergence() -> string {
+  let store = new_log_store()
+
+  let prev_index = 0
+  let prev_term = 0
+
+  let e1 = new_log_entry(1, 1, "cmd1")
+  store = append_entry(store, e1)
+
+  if !validate_prev_log(store, prev_index, prev_term) {
+    return "FAIL: R5 - Prev log validation failed at start"
+  }
+
+  let entries = []
+  push(entries, new_log_entry(1, 2, "cmd2"))
+  push(entries, new_log_entry(1, 3, "cmd3"))
+
+  let raft = new_raft_state()
+
+  let req = new_append_entries(1, 0, 1, 1, 0)
+  req.entries = entries
+
+  let reply = handle_append_entries(raft, store, req)
+
+  if !reply.success {
+    return "FAIL: R5 - Append entries failed"
+  }
+
+  let conflict = get_conflict_index(store, 1, entries)
+  if conflict > 0 {
+    return "FAIL: R5 - Unexpected conflict detected"
+  }
+
+  return "PASS: R5 - Consistency (no divergence at same index)"
+}
+
+// ============= Combined Rules Verification ==========
+
+fn run_all_unforgiving_rules() -> string {
+  let result = ""
+
+  result = result + "=== Raft Unforgiving Rules Verification ===\n\n"
+
+  let r1 = verify_rule_1_state_safety()
+  result = result + r1 + "\n"
+
+  let r2 = verify_rule_2_leader_completeness()
+  result = result + r2 + "\n"
+
+  let r3 = verify_rule_3_election_liveness()
+  result = result + r3 + "\n"
+
+  let r4 = verify_rule_4_replication_safety()
+  result = result + r4 + "\n"
+
+  let r5 = verify_rule_5_consistency_no_divergence()
+  result = result + r5 + "\n"
+
+  let passed = 0
+  if starts_with(r1, "PASS") { passed = passed + 1 }
+  if starts_with(r2, "PASS") { passed = passed + 1 }
+  if starts_with(r3, "PASS") { passed = passed + 1 }
+  if starts_with(r4, "PASS") { passed = passed + 1 }
+  if starts_with(r5, "PASS") { passed = passed + 1 }
+
+  result = result + "\n=== Rule Summary ===\n"
+  result = result + "Passed: " + string(passed) + "/5\n"
+  result = result + "Status: "
+
+  if passed == 5 {
+    result = result + "✅ ALL RULES VERIFIED"
+  } else {
+    result = result + "❌ " + string(5 - passed) + " RULE(S) VIOLATED"
+  }
+
+  return result
+}
+
+fn starts_with(str: string, prefix: string) -> bool {
+  if length(str) < length(prefix) {
+    return false
+  }
+  let i = 0
+  while i < length(prefix) {
+    if str[i] != prefix[i] {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}

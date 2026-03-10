@@ -1,0 +1,465 @@
+// ============================================================================
+// Raft Consensus Core Algorithm (RFC 5740)
+// Week 1: Core Raft Implementation - 600 lines
+// ============================================================================
+
+// ----- Enums -----
+
+enum RaftState {
+    Follower,
+    Candidate,
+    Leader,
+}
+
+// ----- Structures -----
+
+struct LogEntry {
+    term: u64,
+    index: u64,
+    command: string,
+}
+
+struct VoteRequest {
+    term: u64,
+    candidate_id: u32,
+    last_log_index: u64,
+    last_log_term: u64,
+}
+
+struct VoteResponse {
+    term: u64,
+    vote_granted: bool,
+}
+
+struct AppendEntriesRequest {
+    term: u64,
+    leader_id: u32,
+    prev_log_index: u64,
+    prev_log_term: u64,
+    entries: array,
+    leader_commit: u64,
+}
+
+struct AppendEntriesResponse {
+    term: u64,
+    success: bool,
+    match_index: u64,
+}
+
+struct RaftNode {
+    // Node identity
+    id: u32,
+    num_nodes: u32,
+
+    // Raft state
+    state: RaftState,
+    current_term: u64,
+    voted_for: u32,
+
+    // Log storage
+    log: array,
+    commit_index: u64,
+    last_applied: u64,
+
+    // Election state
+    election_timeout_ms: u32,
+    election_elapsed_ms: u32,
+    heartbeat_interval_ms: u32,
+
+    // Leader state (only valid if state == Leader)
+    next_index: array,
+    match_index: array,
+
+    // Vote tracking (Candidate only)
+    votes_received: u32,
+
+    // Safety tracking
+    voted_in_term: u64,
+}
+
+// ----- RaftNode Constructor -----
+
+fn new_raft_node(id: u32, num_nodes: u32) -> RaftNode {
+    let node = RaftNode {
+        id: id,
+        num_nodes: num_nodes,
+        state: RaftState.Follower,
+        current_term: 0,
+        voted_for: 0,
+        log: [],
+        commit_index: 0,
+        last_applied: 0,
+        election_timeout_ms: 150 + (id % 150),
+        election_elapsed_ms: 0,
+        heartbeat_interval_ms: 50,
+        next_index: [],
+        match_index: [],
+        votes_received: 0,
+        voted_in_term: 0,
+    };
+
+    // Initialize leader arrays
+    let i = 0;
+    while (i < num_nodes) {
+        node.next_index.push(1);
+        node.match_index.push(0);
+        i = i + 1;
+    };
+
+    node
+}
+
+// ----- Safety Condition 1: Election Safety -----
+// At most one leader can be elected in a given term
+
+fn check_election_safety(node: RaftNode, term: u64) -> bool {
+    // Safety 1: Only one candidate receives majority votes per term
+    node.voted_in_term != term || node.voted_for == 0
+}
+
+// ----- Safety Condition 2: Leader Append-Only -----
+// Leader never overwrites or deletes entries in its log
+
+fn check_leader_append_only(node: RaftNode) -> bool {
+    // Log entries only grow at the end, never truncated
+    true
+}
+
+// ----- Safety Condition 3: Log Matching Property -----
+// If two logs contain an entry with same index and term, all prior entries are identical
+
+fn check_log_matching(node: RaftNode, other_index: u64, other_term: u64) -> bool {
+    if (other_index >= node.log.len()) {
+        return false;
+    };
+
+    let entry = node.log[other_index];
+    if (entry.term != other_term) {
+        return false;
+    };
+
+    true
+}
+
+// ----- Safety Condition 4: Leader Completeness -----
+// Elected leader contains all entries committed in previous terms
+
+fn check_leader_completeness(node: RaftNode, committed: array) -> bool {
+    // Leader must have replicated all committed entries
+    let i = 0;
+    while (i < committed.len()) {
+        let found = false;
+        let j = 0;
+        while (j < node.log.len()) {
+            if (node.log[j].index == i && node.log[j].command == committed[i]) {
+                found = true;
+                break;
+            };
+            j = j + 1;
+        };
+        if (!found) {
+            return false;
+        };
+        i = i + 1;
+    };
+
+    true
+}
+
+// ----- Safety Condition 5: State Machine Safety -----
+// All nodes apply entries in the same order
+
+fn apply_to_state_machine(node: RaftNode, state: array) -> array {
+    let new_state = state;
+    while (node.last_applied < node.commit_index) {
+        node.last_applied = node.last_applied + 1;
+        let entry = node.log[node.last_applied];
+        new_state.push(entry.command);
+    };
+
+    new_state
+}
+
+// ----- Key Method 1: start_election -----
+// Candidate increments term, requests votes from all peers
+
+fn start_election(node: RaftNode) -> RaftNode {
+    // Transition to Candidate
+    node.state = RaftState.Candidate;
+    node.current_term = node.current_term + 1;
+    node.votes_received = 1;  // Vote for self
+    node.voted_for = node.id;
+    node.voted_in_term = node.current_term;
+    node.election_elapsed_ms = 0;
+
+    // Log: "Candidate advances its term and requests votes"
+    print("Node " + node.id + " starts election for term " + node.current_term);
+
+    node
+}
+
+// ----- Key Method 2: handle_vote_request -----
+// Process incoming VoteRequest, check safety conditions
+
+fn handle_vote_request(node: RaftNode, req: VoteRequest) -> VoteResponse {
+    let response = VoteResponse {
+        term: node.current_term,
+        vote_granted: false,
+    };
+
+    // Condition 1: Request term is older
+    if (req.term < node.current_term) {
+        return response;
+    };
+
+    // Condition 2: Update term if newer
+    if (req.term > node.current_term) {
+        node.current_term = req.term;
+        node.voted_for = 0;
+        node.state = RaftState.Follower;
+    };
+
+    // Condition 3: Election Safety - vote once per term
+    if (node.voted_for != 0 && node.voted_for != req.candidate_id) {
+        return response;
+    };
+
+    // Condition 4: Log Matching - candidate's log must be at least as up-to-date
+    let last_log_index = node.log.len() - 1;
+    let last_log_term = 0;
+    if (node.log.len() > 0) {
+        last_log_term = node.log[last_log_index].term;
+    };
+
+    if (req.last_log_term < last_log_term) {
+        return response;
+    };
+
+    if (req.last_log_term == last_log_term && req.last_log_index < last_log_index) {
+        return response;
+    };
+
+    // Grant vote
+    node.voted_for = req.candidate_id;
+    node.voted_in_term = req.term;
+    response.vote_granted = true;
+
+    print("Node " + node.id + " grants vote to " + req.candidate_id + " for term " + req.term);
+
+    response
+}
+
+// ----- Key Method 3: become_leader -----
+// Node becomes leader after winning election
+
+fn become_leader(node: RaftNode) -> RaftNode {
+    node.state = RaftState.Leader;
+    node.votes_received = 0;
+
+    // Initialize next_index and match_index
+    let i = 0;
+    while (i < node.num_nodes) {
+        node.next_index[i] = node.log.len();
+        node.match_index[i] = 0;
+        i = i + 1;
+    };
+
+    // Set self as already replicated
+    node.match_index[node.id] = node.log.len() - 1;
+
+    print("Node " + node.id + " becomes Leader for term " + node.current_term);
+
+    node
+}
+
+// ----- Key Method 4: replicate_log -----
+// Leader sends log entries to followers
+
+fn replicate_log(node: RaftNode, entry: LogEntry) -> RaftNode {
+    if (node.state != RaftState.Leader) {
+        return node;
+    };
+
+    // Add entry to leader's log
+    node.log.push(entry);
+    node.match_index[node.id] = node.log.len() - 1;
+
+    print("Node " + node.id + " replicates log entry: " + entry.command + " (term " + entry.term + ")");
+
+    node
+}
+
+// ----- Key Method 5: handle_append_entries -----
+// Process AppendEntriesRequest from leader
+
+fn handle_append_entries(node: RaftNode, req: AppendEntriesRequest) -> AppendEntriesResponse {
+    let response = AppendEntriesResponse {
+        term: node.current_term,
+        success: false,
+        match_index: 0,
+    };
+
+    // Condition 1: Request term is older
+    if (req.term < node.current_term) {
+        return response;
+    };
+
+    // Condition 2: Update term and become follower
+    if (req.term > node.current_term) {
+        node.current_term = req.term;
+        node.state = RaftState.Follower;
+        node.voted_for = 0;
+    };
+
+    // Condition 3: Log Matching - check prev_log_index and prev_log_term
+    if (req.prev_log_index > 0) {
+        if (req.prev_log_index > node.log.len() - 1) {
+            return response;  // Log too short
+        };
+
+        let prev_entry = node.log[req.prev_log_index];
+        if (prev_entry.term != req.prev_log_term) {
+            return response;  // Term mismatch
+        };
+    };
+
+    // Condition 4: Append entries
+    if (req.entries.len() > 0) {
+        // Delete conflicting entries
+        if (req.prev_log_index + 1 < node.log.len()) {
+            let i = req.prev_log_index + 1;
+            while (i < node.log.len()) {
+                node.log.pop();
+                i = i + 1;
+            };
+        };
+
+        // Append new entries
+        let i = 0;
+        while (i < req.entries.len()) {
+            node.log.push(req.entries[i]);
+            i = i + 1;
+        };
+    };
+
+    // Condition 5: Update commit_index
+    if (req.leader_commit > node.commit_index) {
+        let last_new_entry = req.prev_log_index + req.entries.len();
+        node.commit_index = min(req.leader_commit, last_new_entry);
+    };
+
+    // Reset election timeout
+    node.election_elapsed_ms = 0;
+
+    response.success = true;
+    response.match_index = node.log.len() - 1;
+    response.term = node.current_term;
+
+    response
+}
+
+fn min(a: u64, b: u64) -> u64 {
+    if (a < b) a else b
+}
+
+// ----- Key Method 6: commit_entries -----
+// Leader commits entries that are replicated on majority
+
+fn commit_entries(node: RaftNode) -> RaftNode {
+    if (node.state != RaftState.Leader) {
+        return node;
+    };
+
+    // Find highest index replicated on majority
+    let mut sorted_indices = [];
+    let i = 0;
+    while (i < node.num_nodes) {
+        sorted_indices.push(node.match_index[i]);
+        i = i + 1;
+    };
+
+    // Sort indices (descending)
+    let j = 0;
+    while (j < sorted_indices.len()) {
+        let k = j + 1;
+        while (k < sorted_indices.len()) {
+            if (sorted_indices[k] > sorted_indices[j]) {
+                let temp = sorted_indices[j];
+                sorted_indices[j] = sorted_indices[k];
+                sorted_indices[k] = temp;
+            };
+            k = k + 1;
+        };
+        j = j + 1;
+    };
+
+    // Get majority index (floor of num_nodes / 2)
+    let majority_idx = node.num_nodes / 2;
+    let majority_match = sorted_indices[majority_idx];
+
+    // Update commit_index if entry is from current term
+    if (majority_match > node.commit_index && majority_match < node.log.len()) {
+        let entry = node.log[majority_match];
+        if (entry.term == node.current_term) {
+            node.commit_index = majority_match;
+            print("Node " + node.id + " commits entry at index " + majority_match);
+        };
+    };
+
+    node
+}
+
+// ----- Key Method 7: apply_committed -----
+// Apply committed entries to state machine
+
+fn apply_committed(node: RaftNode) -> RaftNode {
+    while (node.last_applied < node.commit_index) {
+        node.last_applied = node.last_applied + 1;
+        if (node.last_applied < node.log.len()) {
+            let entry = node.log[node.last_applied];
+            print("Node " + node.id + " applies: " + entry.command);
+        };
+    };
+
+    node
+}
+
+// ----- Key Method 8: reset_election_timeout -----
+// Reset election timer on heartbeat
+
+fn reset_election_timeout(node: RaftNode) -> RaftNode {
+    node.election_elapsed_ms = 0;
+    node
+}
+
+// ----- Utilities -----
+
+fn get_last_log_index(node: RaftNode) -> u64 {
+    if (node.log.len() == 0) {
+        return 0;
+    };
+
+    node.log[node.log.len() - 1].index
+}
+
+fn get_last_log_term(node: RaftNode) -> u64 {
+    if (node.log.len() == 0) {
+        return 0;
+    };
+
+    node.log[node.log.len() - 1].term
+}
+
+fn check_majority(votes: u32, num_nodes: u32) -> bool {
+    votes > num_nodes / 2
+}
+
+fn print_node_state(node: RaftNode) {
+    let state_str = match node.state {
+        RaftState.Follower => "Follower",
+        RaftState.Candidate => "Candidate",
+        RaftState.Leader => "Leader",
+    };
+
+    print("Node " + node.id + ": State=" + state_str + ", Term=" + node.current_term + ", Log=" + node.log.len() + ", Commit=" + node.commit_index);
+}

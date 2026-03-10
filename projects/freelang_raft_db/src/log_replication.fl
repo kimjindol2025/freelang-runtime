@@ -1,0 +1,271 @@
+// Raft Consensus: Log Replication Implementation
+// AppendEntries RPC 프로토콜과 복제 로직
+
+fn new_append_entries(term: i32, leader_id: i32, prev_log_index: i32, prev_log_term: i32, commit_index: i32) -> any {
+  return {
+    term: term,
+    leader_id: leader_id,
+    prev_log_index: prev_log_index,
+    prev_log_term: prev_log_term,
+    entries: [],
+    leader_commit: commit_index
+  }
+}
+
+fn new_append_entries_reply(term: i32, success: bool) -> any {
+  return {
+    term: term,
+    success: success,
+    matched_index: 0
+  }
+}
+
+fn new_replication_state() -> any {
+  return {
+    next_index: [],
+    match_index: [],
+    heartbeat_time: 0
+  }
+}
+
+fn init_replication_for_followers(repl: any, num_followers: i32, last_log_index: i32) -> any {
+  let i = 0
+  while i < num_followers {
+    push(repl.next_index, last_log_index + 1)
+    push(repl.match_index, 0)
+    i = i + 1
+  }
+  return repl
+}
+
+fn get_next_index(repl: any, follower: i32) -> i32 {
+  return repl.next_index[follower]
+}
+
+fn set_next_index(repl: any, follower: i32, index: i32) -> any {
+  repl.next_index[follower] = index
+  return repl
+}
+
+fn get_match_index(repl: any, follower: i32) -> i32 {
+  return repl.match_index[follower]
+}
+
+fn set_match_index(repl: any, follower: i32, index: i32) -> any {
+  if index > repl.match_index[follower] {
+    repl.match_index[follower] = index
+  }
+  return repl
+}
+
+fn advance_next_index(repl: any, follower: i32) -> any {
+  let current = repl.next_index[follower]
+  repl.next_index[follower] = current + 1
+  return repl
+}
+
+fn decrement_next_index(repl: any, follower: i32) -> any {
+  let current = repl.next_index[follower]
+  if current > 1 {
+    repl.next_index[follower] = current - 1
+  }
+  return repl
+}
+
+fn handle_append_entries(raft: any, store: any, req: any) -> any {
+  let reply = new_append_entries_reply(raft.current_term, false)
+
+  if req.term < raft.current_term {
+    return reply
+  }
+
+  if req.term > raft.current_term {
+    raft.current_term = req.term
+    raft.voted_for = -1
+  }
+
+  // Become follower if needed
+  if req.term >= raft.current_term {
+    if raft.state != "Follower" {
+      raft.state = "Follower"
+    }
+    raft.leader_id = req.leader_id
+  }
+
+  reply.term = raft.current_term
+
+  // Check log consistency
+  if !validate_prev_log(store, req.prev_log_index, req.prev_log_term) {
+    return reply
+  }
+
+  // Append entries
+  if length(req.entries) > 0 {
+    let conflict = get_conflict_index(store, req.prev_log_index, req.entries)
+    if conflict > 0 {
+      store = delete_entries_from(store, conflict)
+    }
+    store = append_entries(store, req.entries)
+  }
+
+  // Update commit index
+  if req.leader_commit > raft.commit_index {
+    let new_commit = req.leader_commit
+    let last_index = get_last_index(store)
+    if new_commit > last_index {
+      new_commit = last_index
+    }
+    raft.commit_index = new_commit
+  }
+
+  reply.success = true
+  reply.matched_index = get_last_index(store)
+
+  return reply
+}
+
+fn process_append_entries_reply(raft: any, repl: any, follower: i32, reply: any) -> any {
+  if reply.term > raft.current_term {
+    raft.current_term = reply.term
+    raft.state = "Follower"
+    raft.voted_for = -1
+    raft.leader_id = -1
+    return raft
+  }
+
+  if reply.success {
+    repl = set_match_index(repl, follower, reply.matched_index)
+    repl = set_next_index(repl, follower, reply.matched_index + 1)
+  } else {
+    repl = decrement_next_index(repl, follower)
+  }
+
+  return raft
+}
+
+fn calculate_new_commit_index(repl: any, current_commit: i32, last_log_index: i32) -> i32 {
+  let new_commit = current_commit
+  let i = last_log_index
+  while i > current_commit {
+    let replicated_count = 1
+
+    let j = 0
+    while j < length(repl.match_index) {
+      if repl.match_index[j] >= i {
+        replicated_count = replicated_count + 1
+      }
+      j = j + 1
+    }
+
+    let majority_count = ((length(repl.match_index) + 1) / 2) + 1
+    if replicated_count >= majority_count {
+      new_commit = i
+      return new_commit
+    }
+
+    i = i - 1
+  }
+  return new_commit
+}
+
+fn heartbeat_needed(repl: any, heartbeat_interval: i32) -> bool {
+  return repl.heartbeat_time >= heartbeat_interval
+}
+
+fn reset_heartbeat(repl: any) -> any {
+  repl.heartbeat_time = 0
+  return repl
+}
+
+fn tick_heartbeat(repl: any) -> any {
+  repl.heartbeat_time = repl.heartbeat_time + 1
+  return repl
+}
+
+fn apply_committed_entries(raft: any, store: any) -> any {
+  while raft.last_applied < raft.commit_index {
+    raft.last_applied = raft.last_applied + 1
+    let entry = get_entry(store, raft.last_applied)
+
+    if entry != null {
+      // Entry is applied
+    }
+  }
+  return raft
+}
+
+fn create_append_entries_msg(raft: any, store: any, repl: any, follower: i32) -> any {
+  let next = get_next_index(repl, follower)
+  let prev_index = next - 1
+  let prev_term = 0
+
+  let prev_entry = get_entry(store, prev_index)
+  if prev_entry != null {
+    prev_term = prev_entry.term
+  }
+
+  let msg = new_append_entries(raft.current_term, 0, prev_index, prev_term, raft.commit_index)
+
+  let entries = get_entries_range(store, next, get_last_index(store) + 1)
+  msg.entries = entries
+
+  return msg
+}
+
+fn batch_apply_entries(raft: any, store: any, start: i32, end: i32) -> any {
+  let i = start
+  while i <= end {
+    if i > raft.commit_index {
+      return raft
+    }
+
+    let entry = get_entry(store, i)
+    if entry != null {
+      // Apply entry (state machine update)
+      raft.last_applied = i
+    }
+
+    i = i + 1
+  }
+  return raft
+}
+
+fn is_all_followers_updated(repl: any, last_index: i32) -> bool {
+  let i = 0
+  while i < length(repl.match_index) {
+    if repl.match_index[i] < last_index {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+fn get_replication_status(repl: any) -> string {
+  let result = "Replication: "
+  let i = 0
+  while i < length(repl.match_index) {
+    if i > 0 {
+      result = result + ", "
+    }
+    result = result + "F" + string(i) + ":" + string(repl.match_index[i])
+    i = i + 1
+  }
+  return result
+}
+
+fn validate_replication_invariants(raft: any, repl: any) -> bool {
+  // Invariant 1: match_index <= next_index - 1
+  let i = 0
+  while i < length(repl.match_index) {
+    if repl.match_index[i] > repl.next_index[i] - 1 {
+      return false
+    }
+    i = i + 1
+  }
+
+  // Invariant 2: Leader is included in match_index calculation
+  // (leader always has matched its own entries)
+
+  return true
+}
